@@ -20,7 +20,6 @@ class Olama_Reg_Activator {
      */
     public static function upgrade(): void {
         self::run_migrations();
-        self::install_capabilities();
         update_option( 'olama_reg_version', OLAMA_REG_VERSION );
     }
 
