@@ -1,95 +1,77 @@
 <?php
 /**
- * Extended Family CRUD
+ * Read-only family adapter backed by Olama Core.
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Olama_Reg_Family {
 
-    // ── Read ──────────────────────────────────────────────────────────────────
+    /**
+     * Normalize an Olama Core family for the billing UI.
+     *
+     * Billing records use the Oracle family number (for example "1163") as
+     * family_uid, while Core uses a canonical key such as "ORA-FAM-1163".
+     */
+    private static function normalize_core_family( array $row ): object {
+        $display_name = '';
+        foreach ( [ 'sponsor_full_name', 'father_name', 'mother_name', 'oracle_family_id', 'family_uid' ] as $key ) {
+            if ( ! empty( $row[ $key ] ) ) {
+                $display_name = (string) $row[ $key ];
+                break;
+            }
+        }
+
+        $row['core_family_uid'] = (string) ( $row['family_uid'] ?? '' );
+        $row['family_uid']      = (string) ( $row['oracle_family_id'] ?? $row['family_uid'] ?? '' );
+        $row['family_name']     = $display_name;
+        $row['address']         = (string) ( $row['family_address'] ?? $row['address'] ?? '' );
+        $row['active_student_count'] = (int) ( $row['resolved_students_count'] ?? $row['students_count'] ?? 0 );
+        $row['total_student_count']  = $row['active_student_count'];
+        $row['is_active']       = isset( $row['is_active'] ) && $row['is_active'] !== null
+            ? (int) $row['is_active']
+            : 1;
+
+        return (object) $row;
+    }
 
     public static function get_family( string $family_uid ): ?object {
-        global $wpdb;
-        return $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}olama_families WHERE family_uid = %s",
-            $family_uid
-        ) ) ?: null;
+        $row = Olama_Reg_Core_Gateway::family( $family_uid );
+        return $row ? self::normalize_core_family( (array) $row ) : null;
     }
 
     public static function get_family_by_id( int $id ): ?object {
-        global $wpdb;
-        return $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}olama_families WHERE id = %d",
-            $id
-        ) ) ?: null;
+        $row = Olama_Reg_Core_Gateway::family_by_id( $id );
+        return $row ? self::normalize_core_family( (array) $row ) : null;
+    }
+
+    /**
+     * Search the Core family directory and return the shape expected by Hub.
+     */
+    public static function search( string $query, int $limit = 20 ): array {
+        return array_map( static function ( object $family ): object {
+            return (object) [
+                'uid'           => $family->oracle_family_id,
+                'core_uid'      => $family->family_uid,
+                'name'          => $family->display_name,
+                'phone'         => $family->display_phone,
+                'is_active'     => $family->is_active,
+                'student_count' => $family->students_count,
+            ];
+        }, Olama_Reg_Core_Gateway::search_families( $query, $limit ) );
     }
 
     /**
      * Get family list for WP_List_Table.
      */
     public static function get_families_list( array $args = [] ): array {
-        global $wpdb;
-
-        $search    = sanitize_text_field( $args['search'] ?? '' );
-        $status    = $args['status'] ?? 'all'; // 'all','active','inactive'
-        $per_page  = max( 1, (int) ( $args['per_page'] ?? 20 ) );
-        $offset    = max( 0, (int) ( $args['offset'] ?? 0 ) );
-
-        $where = '1=1';
-        $params = [];
-
-        if ( $search !== '' ) {
-            $like = '%' . $wpdb->esc_like( $search ) . '%';
-            $where .= ' AND ( f.family_uid LIKE %s OR f.family_name LIKE %s )';
-            $params[] = $like;
-            $params[] = $like;
-        }
-
-        // is_active doesn't exist in core olama_families anymore, we might need to remove status checks if it doesn't exist, but we will leave it out for now.
-        // If core table has no is_active, this would throw a SQL error. Let's check core table:
-        // core olama_families has: id, family_uid, family_name, mother_mobile, father_mobile, address, created_at
-        // It does NOT have is_active. So we must remove is_active filtering.
-
-
-        $params[] = $per_page;
-        $params[] = $offset;
-
-        $sql = "SELECT f.*,
-                    0 AS active_student_count, /* Removed as is_active not in core students table? Wait core students has is_active */
-                    COUNT( CASE WHEN s.is_active = 1 THEN 1 END ) AS active_student_count,
-                    COUNT( s.id ) AS total_student_count
-                FROM {$wpdb->prefix}olama_families f
-                LEFT JOIN {$wpdb->prefix}olama_students s ON s.family_id = f.family_uid
-                WHERE {$where}
-                GROUP BY f.id
-                ORDER BY CAST( f.family_uid AS UNSIGNED ) DESC
-                LIMIT %d OFFSET %d";
-
-        return $wpdb->get_results( empty( $params ) ? $sql : $wpdb->prepare( $sql, ...$params ) ) ?: [];
+        return array_map(
+            static fn( object $family ): object => self::normalize_core_family( (array) $family ),
+            Olama_Reg_Core_Gateway::list_families( $args )
+        );
     }
 
     public static function count_families( array $args = [] ): int {
-        global $wpdb;
-
-        $search = sanitize_text_field( $args['search'] ?? '' );
-        $status = $args['status'] ?? 'all';
-
-        $where  = '1=1';
-        $params = [];
-
-        if ( $search !== '' ) {
-            $like = '%' . $wpdb->esc_like( $search ) . '%';
-            $where .= ' AND ( family_uid LIKE %s OR family_name LIKE %s )';
-            $params[] = $like;
-            $params[] = $like;
-        }
-
-        // is_active removed as it doesn't exist in core family table
-
-        $sql = "SELECT COUNT(*) FROM {$wpdb->prefix}olama_families WHERE {$where}";
-        return (int) ( empty( $params ) ? $wpdb->get_var( $sql ) : $wpdb->get_var( $wpdb->prepare( $sql, ...$params ) ) );
+        return Olama_Reg_Core_Gateway::count_families( $args );
     }
-
-
 }

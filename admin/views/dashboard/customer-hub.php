@@ -34,18 +34,12 @@ if ( class_exists( 'Olama_School_Academic' ) ) {
 $preload_customer = null;
 if ( isset( $_GET['family_uid'] ) ) {
     $uid = sanitize_text_field( $_GET['family_uid'] );
-    global $wpdb;
-    $row = $wpdb->get_row( $wpdb->prepare(
-        "SELECT family_uid AS uid, family_name AS name, father_mobile AS phone, is_active 
-         FROM {$wpdb->prefix}olama_families 
-         WHERE family_uid = %s LIMIT 1",
-        $uid
-    ) );
+    $row = Olama_Reg_Family::get_family( $uid );
     if ( $row ) {
         $preload_customer = [
-            'uid'       => $row->uid,
-            'name'      => $row->name,
-            'phone'     => $row->phone,
+            'uid'       => $row->family_uid,
+            'name'      => $row->family_name,
+            'phone'     => $row->primary_mobile ?: $row->father_mobile ?: $row->mother_mobile,
             'type'      => 'family',
             'is_active' => (int) $row->is_active,
         ];

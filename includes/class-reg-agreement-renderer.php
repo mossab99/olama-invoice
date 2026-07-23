@@ -28,14 +28,12 @@ class Olama_Reg_Agreement_Renderer {
         $args = [];
 
         if ( ! empty( $payer_id ) ) {
-            // Resolve payer type and target ID/UID
-            $family_exists = $wpdb->get_var( $wpdb->prepare(
-                "SELECT COUNT(*) FROM {$wpdb->prefix}olama_families WHERE family_uid = %s",
-                $payer_id
-            ) );
-            if ( $family_exists ) {
+            // Families are owned by Olama Core. Query agreements with the
+            // canonical UID even when Hub supplies an Oracle file number.
+            $family = Olama_Reg_Core_Gateway::family( $payer_id );
+            if ( $family ) {
                 $args['payer_type'] = 'family';
-                $args['payer_id']   = $payer_id;
+                $args['payer_id']   = (string) $family->family_uid;
             } else {
                 $customer = $wpdb->get_row( $wpdb->prepare(
                     "SELECT id FROM {$wpdb->prefix}olama_customers WHERE customer_uid = %s OR id = %d LIMIT 1",
@@ -277,10 +275,13 @@ class Olama_Reg_Agreement_Renderer {
                 $payer_children[] = [ 'id' => (int) $r->id, 'text' => $r->text ];
             }
         } elseif ( $agreement->payer_type === 'family' && $agreement->payer_id ) {
-            $table = $wpdb->prefix . 'olama_students';
-            $rows = $wpdb->get_results( $wpdb->prepare( "SELECT student_uid AS id, student_name AS text FROM {$table} WHERE family_id = %s", $agreement->payer_id ) );
-            foreach ( $rows as $r ) {
-                $payer_children[] = [ 'id' => $r->id, 'text' => $r->text ];
+            $family_reference = (string) ( $agreement->family_uid ?? $agreement->payer_ref ?? $agreement->payer_id );
+            $academic_year_id = (int) ( $agreement->academic_year_id ?? 0 );
+            foreach ( Olama_Reg_Core_Gateway::students_for_family( $family_reference, $academic_year_id ) as $student ) {
+                $payer_children[] = [
+                    'id'   => $student->student_uid,
+                    'text' => $student->display_name,
+                ];
             }
         }
 
@@ -292,11 +293,22 @@ class Olama_Reg_Agreement_Renderer {
         ob_start();
         ?>
         <table class="olama-reg-fin-table" id="os-agr-fees-table" data-agr-id="<?php echo esc_attr( $id ); ?>">
+            <colgroup>
+                <col class="os-agr-fees-col-template">
+                <col class="os-agr-fees-col-subscriber">
+                <col class="os-agr-fees-col-details">
+                <col class="os-agr-fees-col-amount">
+                <col class="os-agr-fees-col-discount">
+                <col class="os-agr-fees-col-net">
+                <col class="os-agr-fees-col-due-date">
+                <col class="os-agr-fees-col-status">
+                <col class="os-agr-fees-col-actions">
+            </colgroup>
             <thead>
                 <tr>
-                    <th style="width: 15%;"><?php esc_html_e( 'نوع العقد / نموذج العقد', 'olama-registration' ); ?></th>
+                    <th style="width: 15%;"><?php esc_html_e( 'نموذج الرسوم', 'olama-registration' ); ?></th>
                     <th style="width: 15%;"><?php esc_html_e( 'المشترك', 'olama-registration' ); ?></th>
-                    <th style="width: 20%;"><?php esc_html_e( 'البيان', 'olama-registration' ); ?></th>
+                    <th style="width: 20%;"><?php esc_html_e( 'تفاصيل النموذج', 'olama-registration' ); ?></th>
                     <th style="width: 12%;"><?php esc_html_e( 'المبلغ', 'olama-registration' ); ?></th>
                     <th style="width: 10%;"><?php esc_html_e( 'الخصم', 'olama-registration' ); ?></th>
                     <th style="width: 10%;"><?php esc_html_e( 'الصافي', 'olama-registration' ); ?></th>
@@ -314,17 +326,24 @@ class Olama_Reg_Agreement_Renderer {
                         <tr data-fee-id="<?php echo esc_attr( $fee->id ); ?>">
                             <td>
                                 <select name="fee_category" style="width:100%" class="os-agr-fee-template-select" <?php disabled( $is_locked ); ?>>
+                                    <option value="" <?php selected( ! is_numeric( $fee->fee_category ) ); ?>><?php esc_html_e( 'اختر نموذج الرسوم', 'olama-registration' ); ?></option>
                                     <?php
                                     foreach ( $templates as $tpl ) {
                                         $total = 0;
+                                        $breakdown = [];
                                         foreach ( $tpl->items as $it ) {
-                                            $total += (float) ( $it['amount'] ?? 0 );
+                                            $item_amount = (float) ( $it['amount'] ?? 0 );
+                                            $total += $item_amount;
+                                            $breakdown[] = [
+                                                'description' => (string) ( $it['description'] ?? '' ),
+                                                'amount'      => $item_amount,
+                                            ];
                                         }
                                         $selected = selected( $fee->fee_category, $tpl->id, false );
                                         if ( ! $selected && $fee->fee_category === $tpl->template_name ) {
                                             $selected = 'selected="selected"';
                                         }
-                                        echo '<option value="' . esc_attr( $tpl->id ) . '" data-name="' . esc_attr( $tpl->template_name ) . '" data-amount="' . esc_attr( $total ) . '" data-subject-type="' . esc_attr( $tpl->subject_type ?? 'general' ) . '" data-subject-value="' . esc_attr( $tpl->subject_value ?? '' ) . '" ' . $selected . '>' . esc_html( $tpl->template_name ) . '</option>';
+                                        echo '<option value="' . esc_attr( $tpl->id ) . '" data-name="' . esc_attr( $tpl->template_name ) . '" data-amount="' . esc_attr( $total ) . '" data-breakdown="' . esc_attr( wp_json_encode( $breakdown ) ) . '" data-subject-type="' . esc_attr( $tpl->subject_type ?? 'general' ) . '" data-subject-value="' . esc_attr( $tpl->subject_value ?? '' ) . '" ' . $selected . '>' . esc_html( $tpl->template_name ) . '</option>';
                                     }
                                     if ( $fee->fee_category !== 'general' && ! is_numeric( $fee->fee_category ) ) {
                                         echo '<option value="' . esc_attr( $fee->fee_category ) . '" selected>' . esc_html( $fee->fee_category ) . '</option>';
@@ -345,31 +364,27 @@ class Olama_Reg_Agreement_Renderer {
                                     ?>
                                 </select>
                             </td>
-                            <td>
-                                <input type="text" name="label" value="<?php echo esc_attr( $fee->label ); ?>" style="width:100%" <?php disabled( $is_locked ); ?>>
-                            </td>
-                            <td>
-                                <input type="number" step="0.01" name="amount" value="<?php echo esc_attr( $fee->amount ); ?>" style="width:100%" class="os-agr-fee-calc" <?php disabled( $is_locked ); ?>>
-                                <?php
-                                if ( is_numeric( $fee->fee_category ) && $fee->fee_category > 0 && class_exists( 'Olama_Reg_Billing_Fees' ) ) {
-                                    $row_template = Olama_Reg_Billing_Fees::get_template( (int) $fee->fee_category );
-                                    if ( $row_template && ! empty( $row_template->items ) ) {
-                                        echo '<div style="font-size:11px; margin-top:5px; padding:5px; background:#f9f9f9; border:1px solid #ddd; border-radius:3px;">';
-                                        $total_items = 0;
-                                        foreach ( $row_template->items as $item ) {
-                                            $desc = esc_html( $item['description'] ?? '' );
-                                            $amt = (float) ( $item['amount'] ?? 0 );
-                                            $total_items += $amt;
-                                            echo "<div style='display:flex; justify-content:space-between;'><span>{$desc}:</span> <span>" . number_format( $amt, 3 ) . "</span></div>";
+                            <td class="os-agr-fee-description">
+                                <input type="hidden" name="label" value="<?php echo esc_attr( $fee->label ); ?>">
+                                <strong class="os-agr-fee-template-name"><?php echo esc_html( $fee->label ); ?></strong>
+                                <div class="os-agr-fee-breakdown">
+                                    <?php
+                                    if ( is_numeric( $fee->fee_category ) && (int) $fee->fee_category > 0 && class_exists( 'Olama_Reg_Billing_Fees' ) ) {
+                                        $row_template = Olama_Reg_Billing_Fees::get_template( (int) $fee->fee_category );
+                                        if ( $row_template && ! empty( $row_template->items ) ) {
+                                            foreach ( $row_template->items as $item ) {
+                                                echo '<span><span>' . esc_html( $item['description'] ?? '' ) . '</span><b>' . esc_html( number_format( (float) ( $item['amount'] ?? 0 ), 3 ) ) . '</b></span>';
+                                            }
                                         }
-                                        echo '<div style="border-top:1px dashed #ccc; margin-top:4px; padding-top:4px; display:flex; justify-content:space-between;"><strong>' . esc_html__( 'الإجمالي:', 'olama-registration' ) . '</strong> <strong>' . number_format( $total_items, 3 ) . '</strong></div>';
-                                        echo '</div>';
                                     }
-                                }
-                                ?>
+                                    ?>
+                                </div>
                             </td>
                             <td>
-                                <input type="number" step="0.01" name="discount" value="<?php echo esc_attr( $fee->discount ); ?>" style="width:100%" class="os-agr-fee-calc" <?php disabled( $is_locked ); ?>>
+                                <input type="number" step="0.001" inputmode="decimal" name="amount" value="<?php echo esc_attr( $fee->amount ); ?>" class="os-agr-fee-calc os-agr-money-input" readonly <?php disabled( $is_locked ); ?>>
+                            </td>
+                            <td>
+                                <input type="number" step="0.001" inputmode="decimal" name="discount" value="<?php echo esc_attr( $fee->discount ); ?>" class="os-agr-fee-calc os-agr-money-input" <?php disabled( $is_locked ); ?>>
                             </td>
                             <td>
                                 <span class="os-agr-fee-net"><?php echo number_format( (float) $fee->net_amount, 3 ); ?></span>
@@ -410,38 +425,6 @@ class Olama_Reg_Agreement_Renderer {
                         <strong><?php esc_html_e( 'الإجمالي الكلي للعقد:', 'olama-registration' ); ?></strong></td>
                     <td colspan="4"><strong><span id="os-agr-total-label"><?php echo number_format( (float) $agreement->total_amount, 3 ); ?></span> JD</strong></td>
                 </tr>
-                <?php 
-                $actual_template_id = $agreement->template_id;
-                if ( empty( $actual_template_id ) && ! empty( $fees ) ) {
-                    foreach ( $fees as $fee ) {
-                        if ( is_numeric( $fee->fee_category ) && $fee->fee_category > 0 ) {
-                            $actual_template_id = (int) $fee->fee_category;
-                            break;
-                        }
-                    }
-                }
-
-                if ( ! empty( $actual_template_id ) && class_exists( 'Olama_Reg_Billing_Fees' ) ) {
-                    $fee_template = Olama_Reg_Billing_Fees::get_template( $actual_template_id );
-                    if ( $fee_template ) {
-                        ?>
-                        <tr>
-                            <td colspan="9" style="text-align:center; font-weight:normal; background-color: #f9f9f9;">
-                                <?php 
-                                $template_name = esc_html( $fee_template->template_name );
-                                $total_amount_formatted = number_format( (float) $agreement->total_amount, 3 );
-                                echo sprintf(
-                                    esc_html__( 'بناءً على نموذج الرسوم (%s): صافي %s دينار، ويُوزَّع على أقساط العقد.', 'olama-registration' ),
-                                    $template_name,
-                                    $total_amount_formatted
-                                );
-                                ?>
-                            </td>
-                        </tr>
-                        <?php
-                    }
-                }
-                ?>
             </tfoot>
         </table>
         <?php

@@ -19,13 +19,14 @@ class Olama_Reg_Cash_Session {
         $cashier_id = absint( $data['cashier_id'] ?? get_current_user_id() );
         $date = self::sanitize_date( $data['session_date'] ?? current_time( 'Y-m-d' ) );
         $opening_raw = isset( $data['opening_balance'] ) ? trim( (string) $data['opening_balance'] ) : '';
-        $opening = $opening_raw === ''
-            ? self::get_default_opening_balance( $account_id, $date )
-            : round( (float) $opening_raw, 2 );
+        $opening = is_numeric( $opening_raw ) ? round( (float) $opening_raw, 2 ) : null;
         $notes = sanitize_textarea_field( $data['notes'] ?? '' );
 
         if ( ! $account_id || ! $cashier_id ) {
             return new \WP_Error( 'missing_session_data', __( 'Cash account and cashier are required.', 'olama-registration' ) );
+        }
+        if ( $opening === null ) {
+            return new \WP_Error( 'opening_count_required', __( 'Enter the physical cash counted before opening the session.', 'olama-registration' ) );
         }
         if ( $opening < 0 ) {
             return new \WP_Error( 'invalid_opening_balance', __( 'Opening balance cannot be negative.', 'olama-registration' ) );
@@ -41,9 +42,20 @@ class Olama_Reg_Cash_Session {
             return $policy;
         }
 
-        $existing = self::get_open_session( $account_id, $cashier_id );
+        $existing = self::get_unsettled_account_session( $account_id );
         if ( $existing ) {
-            return new \WP_Error( 'session_already_open', __( 'There is already an open cash session for this cashier and cash account.', 'olama-registration' ) );
+            return new \WP_Error( 'session_not_settled', __( 'The previous session for this cash account must be closed and reviewed before opening another session.', 'olama-registration' ) );
+        }
+
+        $reference = self::get_opening_reference_balance( $account_id, $date );
+        $opening_difference = round( $opening - $reference, 2 );
+        if ( abs( $opening_difference ) >= 0.01 ) {
+            if ( empty( $data['opening_variance_acknowledged'] ) ) {
+                return new \WP_Error( 'opening_variance_not_acknowledged', __( 'Confirm the opening cash difference before opening the session.', 'olama-registration' ) );
+            }
+            if ( $notes === '' ) {
+                return new \WP_Error( 'opening_variance_notes_required', __( 'Explain the opening cash difference before opening the session.', 'olama-registration' ) );
+            }
         }
 
         if ( ! self::acquire_number_lock() ) {
@@ -57,8 +69,11 @@ class Olama_Reg_Cash_Session {
             'session_date'             => $date,
             'opened_at'                => current_time( 'mysql' ),
             'opening_balance'          => $opening,
+            'opening_reference_balance'=> $reference,
+            'opening_difference_amount'=> $opening_difference,
             'expected_closing_balance' => $opening,
             'status'                   => 'open',
+            'opening_notes'            => $notes ?: null,
             'notes'                    => $notes ?: null,
         ];
 
@@ -75,7 +90,7 @@ class Olama_Reg_Cash_Session {
         return $id;
     }
 
-    public static function close( int $session_id, float $actual_closing_balance, string $notes = '' ): true|\WP_Error {
+    public static function close( int $session_id, $actual_closing_balance, string $notes = '' ): true|\WP_Error {
         global $wpdb;
 
         $session = self::get( $session_id );
@@ -91,12 +106,21 @@ class Olama_Reg_Cash_Session {
             return $policy;
         }
 
+        $actual_raw = trim( (string) $actual_closing_balance );
+        if ( $actual_raw === '' || ! is_numeric( $actual_raw ) ) {
+            return new \WP_Error( 'actual_count_required', __( 'Enter the physical cash counted before closing the session.', 'olama-registration' ) );
+        }
+
         $totals = self::calculate_totals( $session_id );
-        $actual = round( $actual_closing_balance, 2 );
+        $actual = round( (float) $actual_raw, 2 );
         if ( $actual < 0 ) {
             return new \WP_Error( 'invalid_actual_balance', __( 'Actual closing balance cannot be negative.', 'olama-registration' ) );
         }
         $difference = round( $actual - $totals['expected'], 2 );
+        $notes = sanitize_textarea_field( $notes );
+        if ( abs( $difference ) >= 0.01 && $notes === '' ) {
+            return new \WP_Error( 'closing_variance_notes_required', __( 'Explain the cash shortage or excess before closing the session.', 'olama-registration' ) );
+        }
 
         $updated = $wpdb->update(
             self::t( 'olama_cash_sessions' ),
@@ -108,7 +132,8 @@ class Olama_Reg_Cash_Session {
                 'difference_amount'        => $difference,
                 'closed_at'                => current_time( 'mysql' ),
                 'status'                   => 'pending_review',
-                'notes'                    => sanitize_textarea_field( $notes ) ?: $session->notes,
+                'closing_notes'            => $notes ?: null,
+                'notes'                    => $notes ?: $session->notes,
             ],
             [ 'id' => $session_id ]
         );
@@ -138,21 +163,57 @@ class Olama_Reg_Cash_Session {
             return $policy;
         }
 
+        $notes = sanitize_textarea_field( $notes );
+        if ( abs( (float) $session->difference_amount ) >= 0.01 && $notes === '' ) {
+            return new \WP_Error( 'review_notes_required', __( 'Add a review note for a session with a cash difference.', 'olama-registration' ) );
+        }
+
         $status = $decision === 'reject' ? 'rejected' : 'closed';
+        $wpdb->query( 'START TRANSACTION' );
+        if ( $status === 'closed' ) {
+            $opening_variance = round( (float) ( $session->opening_difference_amount ?? 0 ), 2 );
+            $closing_variance = round( (float) ( $session->difference_amount ?? 0 ), 2 );
+
+            foreach ( [
+                [ 'phase' => 'opening', 'difference' => $opening_variance, 'notes' => (string) ( $session->opening_notes ?? '' ) ],
+                [ 'phase' => 'closing', 'difference' => $closing_variance, 'notes' => $notes ?: (string) ( $session->closing_notes ?? '' ) ],
+            ] as $variance ) {
+                if ( abs( $variance['difference'] ) < 0.01 ) {
+                    continue;
+                }
+
+                $movement = Olama_Reg_Cash_Bank_Movement::record_cash_session_variance(
+                    $session_id,
+                    (int) $session->account_id,
+                    (float) $variance['difference'],
+                    (string) $variance['phase'],
+                    (string) $session->session_date,
+                    (string) $variance['notes']
+                );
+                if ( is_wp_error( $movement ) ) {
+                    $wpdb->query( 'ROLLBACK' );
+                    return $movement;
+                }
+            }
+        }
+
         $updated = $wpdb->update(
             self::t( 'olama_cash_sessions' ),
             [
                 'status'      => $status,
                 'reviewed_by' => get_current_user_id(),
                 'reviewed_at' => current_time( 'mysql' ),
-                'notes'       => sanitize_textarea_field( $notes ) ?: $session->notes,
+                'review_notes'=> $notes ?: null,
+                'notes'       => $notes ?: $session->notes,
             ],
             [ 'id' => $session_id ]
         );
 
         if ( $updated === false ) {
+            $wpdb->query( 'ROLLBACK' );
             return new \WP_Error( 'db_error', $wpdb->last_error );
         }
+        $wpdb->query( 'COMMIT' );
 
         self::log_audit( 'cash_session', $session_id, $status === 'closed' ? 'cash_session_reviewed' : 'cash_session_rejected', $session, self::get( $session_id ) );
 
@@ -309,12 +370,28 @@ class Olama_Reg_Cash_Session {
     public static function get_cash_accounts(): array {
         global $wpdb;
 
-        return $wpdb->get_results(
+        $accounts = $wpdb->get_results(
             "SELECT id, account_code, account_name
              FROM " . self::t( 'olama_financial_accounts' ) . "
              WHERE type = 'cash' AND is_active = 1
              ORDER BY is_default DESC, account_name ASC"
         ) ?: [];
+
+        $today = current_time( 'Y-m-d' );
+        foreach ( $accounts as $account ) {
+            $account->reference_balance = self::get_opening_reference_balance( (int) $account->id, $today );
+        }
+
+        return $accounts;
+    }
+
+    public static function get_opening_reference_balance( int $account_id, ?string $session_date = null ): float {
+        if ( ! $account_id ) {
+            return 0.0;
+        }
+
+        $date = self::sanitize_date( $session_date ?? current_time( 'Y-m-d' ) );
+        return Olama_Reg_Cash_Bank_Movement::get_account_balance( $account_id, $date );
     }
 
     private static function get_account( int $account_id ): ?object {
@@ -326,13 +403,15 @@ class Olama_Reg_Cash_Session {
         ) ) ?: null;
     }
 
-    private static function get_default_opening_balance( int $account_id, string $session_date ): float {
-        if ( ! $account_id ) {
-            return 0.0;
-        }
+    private static function get_unsettled_account_session( int $account_id ): ?object {
+        global $wpdb;
 
-        $previous_day = date( 'Y-m-d', strtotime( $session_date . ' -1 day' ) );
-        return Olama_Reg_Cash_Bank_Movement::get_account_balance( $account_id, $previous_day );
+        return $wpdb->get_row( $wpdb->prepare(
+            "SELECT * FROM " . self::t( 'olama_cash_sessions' ) . "
+             WHERE account_id = %d AND status IN ('open', 'pending_review')
+             ORDER BY id DESC LIMIT 1",
+            $account_id
+        ) ) ?: null;
     }
 
     private static function sanitize_date( string $date ): string {

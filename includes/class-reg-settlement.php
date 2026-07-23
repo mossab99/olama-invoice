@@ -212,9 +212,10 @@ class Olama_Reg_Settlement {
         
         $order_by = "ORDER BY r.id DESC";
 
-        $sql = "SELECT r.*, f.family_name AS father_first_name, '' AS father_family_name 
+        $sql = "SELECT r.*, COALESCE(f.sponsor_full_name, f.father_name, f.mother_name, r.family_id) AS father_first_name, '' AS father_family_name
                 FROM {$table} r
-                LEFT JOIN {$wpdb->prefix}olama_families f ON f.family_uid = r.family_id
+                LEFT JOIN {$wpdb->prefix}olama_core_families f
+                    ON f.family_uid = r.family_id OR f.oracle_family_id = r.family_id
                 WHERE {$where_sql} {$order_by}";
 
         if ( ! empty( $values ) ) {

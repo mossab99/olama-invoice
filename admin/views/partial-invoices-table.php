@@ -42,7 +42,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
             ?>
                 <tr>
                     <td><strong style="letter-spacing:0.3px;"><?php echo esc_html( $inv->invoice_number ); ?></strong></td>
-                    <td><span class="olama-reg-uid-badge"><?php echo esc_html( $inv->family_uid ); ?></span></td>
+                    <td><span class="olama-reg-uid-badge"><?php echo esc_html( $inv->oracle_family_id ?: $inv->family_uid ); ?></span></td>
                     <td>
                         <?php echo esc_html( trim( $inv->father_first_name . ' ' . $inv->father_family_name ) ); ?>
                         <?php if ( ! empty( $inv->covered_children_names ) ) : ?>

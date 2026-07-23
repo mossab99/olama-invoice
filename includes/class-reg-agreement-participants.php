@@ -75,6 +75,9 @@ class Olama_Reg_Agreement_Participants {
         $participant_type = sanitize_key( $data['participant_type'] ?? 'student' );
         $participant_ref  = sanitize_text_field( $data['participant_ref'] ?? '' );
         $student_uid      = ! empty( $data['student_uid'] ) ? sanitize_text_field( $data['student_uid'] ) : null;
+        $oracle_family_id = ! empty( $data['oracle_family_id'] ) ? sanitize_text_field( $data['oracle_family_id'] ) : null;
+        $oracle_student_id = ! empty( $data['oracle_student_id'] ) ? sanitize_text_field( $data['oracle_student_id'] ) : null;
+        $name_snapshot    = ! empty( $data['participant_name_snapshot'] ) ? sanitize_text_field( $data['participant_name_snapshot'] ) : null;
         $child_id         = ! empty( $data['child_id'] ) ? absint( $data['child_id'] ) : null;
         $role             = sanitize_key( $data['role'] ?? 'beneficiary' );
         $created_by       = get_current_user_id();
@@ -82,14 +85,17 @@ class Olama_Reg_Agreement_Participants {
         if ( $payer_type === 'family' ) {
             $inserted = $wpdb->query( $wpdb->prepare(
                 "INSERT IGNORE INTO {$table}
-                 (agreement_id, payer_type, family_uid, participant_type, participant_ref, student_uid, child_id, role, created_by)
-                 VALUES (%d, %s, %s, %s, %s, %s, NULL, %s, %d)",
+                 (agreement_id, payer_type, family_uid, oracle_family_id, participant_type, participant_ref, student_uid, oracle_student_id, participant_name_snapshot, child_id, role, created_by)
+                 VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %d)",
                 $agreement_id,
                 $payer_type,
                 $family_uid,
+                $oracle_family_id,
                 $participant_type,
                 $participant_ref,
                 $student_uid,
+                $oracle_student_id,
+                $name_snapshot,
                 $role,
                 $created_by
             ) );
@@ -158,8 +164,10 @@ class Olama_Reg_Agreement_Participants {
 
         // 1. Get distinct child_id values from the fees table for this agreement
         $fee_children = $wpdb->get_col( $wpdb->prepare(
-            "SELECT DISTINCT child_id FROM {$fees_table}
-             WHERE agreement_id = %d AND child_id IS NOT NULL AND child_id != ''",
+            "SELECT DISTINCT COALESCE(NULLIF(student_uid, ''), NULLIF(participant_ref, ''), child_id)
+             FROM {$fees_table}
+             WHERE agreement_id = %d
+               AND COALESCE(NULLIF(student_uid, ''), NULLIF(participant_ref, ''), child_id) IS NOT NULL",
             $agreement_id
         ) ) ?: [];
 
@@ -189,16 +197,24 @@ class Olama_Reg_Agreement_Participants {
             $child_id    = ( ! $is_family && is_numeric( $pid ) ) ? (int) $pid : null;
 
             if ( $is_family ) {
+                $student = Olama_Reg_Core_Gateway::student( $student_uid );
+                if ( ! $student ) {
+                    continue;
+                }
+                $family_uid = (string) ( $agreement->family_uid ?: $student->family_uid );
                 $wpdb->query( $wpdb->prepare(
                     "INSERT IGNORE INTO {$table}
-                     (agreement_id, payer_type, family_uid, participant_type, participant_ref, student_uid, child_id, role, created_by)
-                     VALUES (%d, %s, %s, %s, %s, %s, NULL, 'beneficiary', %d)",
+                     (agreement_id, payer_type, family_uid, oracle_family_id, participant_type, participant_ref, student_uid, oracle_student_id, participant_name_snapshot, child_id, role, created_by)
+                     VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s, NULL, 'beneficiary', %d)",
                     $agreement_id,
                     $payer_type,
-                    $payer_id,
+                    $family_uid,
+                    $student->oracle_family_id,
                     $participant_type,
                     $participant_ref,
                     $student_uid,
+                    $student->oracle_student_id,
+                    $student->display_name,
                     (int) ( $agreement->created_by ?? 0 )
                 ) );
             } else {

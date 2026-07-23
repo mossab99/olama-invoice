@@ -15,6 +15,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Olama_Reg_Family_Financial_Summary {
 
     /**
+     * Resolve any supported family reference to Core's billing UID.
+     */
+    private static function canonical_family_uid( string $family_reference ): string {
+        $family = Olama_Reg_Core_Gateway::family( $family_reference );
+        return $family ? (string) $family->family_uid : $family_reference;
+    }
+
+    /**
      * Get the full financial summary for a family in a given academic year.
      *
      * @param string $family_uid
@@ -23,6 +31,7 @@ class Olama_Reg_Family_Financial_Summary {
      */
     public static function get_family_summary( string $family_uid, int $academic_year_id = 0 ): object {
         global $wpdb;
+        $family_uid = self::canonical_family_uid( $family_uid );
         $table = $wpdb->prefix . 'olama_family_financial_snapshots';
 
         $snapshot = $wpdb->get_row( $wpdb->prepare(
@@ -54,6 +63,8 @@ class Olama_Reg_Family_Financial_Summary {
             'total_debit_adjustments'  => 0.0,
             'net_adjustments'          => 0.0,
             'current_balance'          => 0.0,
+            'oracle_balance'           => null,
+            'reconciliation_difference'=> null,
             'due_now'                  => 0.0,
             'overdue'                  => 0.0,
             'previous_balance'         => 0.0,
@@ -75,7 +86,8 @@ class Olama_Reg_Family_Financial_Summary {
         $students = $wpdb->get_results( $wpdb->prepare(
             "SELECT DISTINCT ap.student_uid, s.student_name
              FROM {$wpdb->prefix}olama_agreement_participants ap
-             LEFT JOIN {$wpdb->prefix}olama_students s ON s.student_uid = ap.student_uid
+             LEFT JOIN {$wpdb->prefix}olama_core_students s
+                ON s.student_uid = ap.student_uid OR s.oracle_student_id = ap.student_uid
              WHERE ap.family_uid = %s AND ap.participant_type = 'student' AND ap.student_uid IS NOT NULL AND ap.student_uid != ''",
             $family_uid
         ) ) ?: [];
@@ -253,7 +265,8 @@ class Olama_Reg_Family_Financial_Summary {
             $student_names = $wpdb->get_col( $wpdb->prepare(
                 "SELECT DISTINCT COALESCE(s.student_name, ap.student_uid)
                  FROM {$wpdb->prefix}olama_agreement_participants ap
-                 LEFT JOIN {$wpdb->prefix}olama_students s ON s.student_uid = ap.student_uid
+                 LEFT JOIN {$wpdb->prefix}olama_core_students s
+                    ON s.student_uid = ap.student_uid OR s.oracle_student_id = ap.student_uid
                  WHERE ap.agreement_id = %d AND ap.participant_type = 'student'",
                 $agr->agreement_id
             ) ) ?: [];
@@ -359,6 +372,7 @@ class Olama_Reg_Family_Financial_Summary {
      */
     public static function rebuild_snapshot( string $family_uid, int $academic_year_id = 0 ): void {
         global $wpdb;
+        $family_uid = self::canonical_family_uid( $family_uid );
         $table = $wpdb->prefix . 'olama_family_financial_snapshots';
 
         // 1. Calculate agreements count
@@ -461,6 +475,19 @@ class Olama_Reg_Family_Financial_Summary {
         // 9. Calculate unallocated payments
         $unallocated_payments = self::get_unallocated_payments( $family_uid, $academic_year_id );
 
+        // Oracle is a read-only comparison ledger. It never changes the local
+        // operational balance or causes local payments to be counted twice.
+        $family = Olama_Reg_Core_Gateway::family( $family_uid );
+        $oracle_data = Olama_Reg_Core_Gateway::oracle_financial( $family_uid, $academic_year_id );
+        $oracle_summary = $oracle_data['summary'] ?? null;
+        $oracle_balance = $oracle_summary
+            ? (float) ( is_array( $oracle_summary ) ? ( $oracle_summary['balance'] ?? 0 ) : ( $oracle_summary->balance ?? 0 ) )
+            : null;
+        $reconciliation_difference = $oracle_balance !== null
+            ? $current_balance - $oracle_balance
+            : null;
+        $study_year = (string) ( $oracle_data['study_year'] ?? '' );
+
         // MD5 Hash of data inputs for calculation cache integrity
         $hash_input = implode( '|', [
             $total_agreements,
@@ -480,16 +507,22 @@ class Olama_Reg_Family_Financial_Summary {
         // Save snapshot to DB
         $wpdb->query( $wpdb->prepare(
             "INSERT INTO {$table} (
-                family_uid, academic_year_id, total_agreements, total_fees, total_discounts,
+                family_uid, oracle_family_id, academic_year_id, study_year,
+                total_agreements, total_fees, total_discounts,
                 gross_invoiced, total_paid, total_settlements, total_credit_adjustments,
-                total_debit_adjustments, net_adjustments, current_balance, due_now, overdue,
+                total_debit_adjustments, net_adjustments, current_balance, oracle_balance,
+                reconciliation_difference, due_now, overdue,
                 previous_balance, unallocated_payments, calculated_at, calculation_hash
             ) VALUES (
-                %s, %d, %d, %f, %f,
+                %s, %s, %d, %s,
+                %d, %f, %f,
                 %f, %f, %f, %f,
-                %f, %f, %f, %f, %f,
+                %f, %f, %f, %f,
+                %f, %f, %f,
                 %f, %f, NOW(), %s
             ) ON DUPLICATE KEY UPDATE
+                oracle_family_id = VALUES(oracle_family_id),
+                study_year = VALUES(study_year),
                 total_agreements = VALUES(total_agreements),
                 total_fees = VALUES(total_fees),
                 total_discounts = VALUES(total_discounts),
@@ -500,6 +533,8 @@ class Olama_Reg_Family_Financial_Summary {
                 total_debit_adjustments = VALUES(total_debit_adjustments),
                 net_adjustments = VALUES(net_adjustments),
                 current_balance = VALUES(current_balance),
+                oracle_balance = VALUES(oracle_balance),
+                reconciliation_difference = VALUES(reconciliation_difference),
                 due_now = VALUES(due_now),
                 overdue = VALUES(overdue),
                 previous_balance = VALUES(previous_balance),
@@ -507,7 +542,9 @@ class Olama_Reg_Family_Financial_Summary {
                 calculated_at = NOW(),
                 calculation_hash = VALUES(calculation_hash)",
             $family_uid,
+            $family ? $family->oracle_family_id : null,
             $academic_year_id,
+            $study_year,
             $total_agreements,
             $total_fees,
             $total_discounts,
@@ -518,6 +555,8 @@ class Olama_Reg_Family_Financial_Summary {
             $total_debit_adjustments,
             $net_adjustments,
             $current_balance,
+            $oracle_balance,
+            $reconciliation_difference,
             $due_now,
             $overdue,
             $previous_balance,
@@ -621,18 +660,26 @@ class Olama_Reg_Family_Financial_Summary {
      */
     public static function invalidate_snapshot( string $family_uid, int $academic_year_id = 0 ): void {
         global $wpdb;
+        $family = Olama_Reg_Core_Gateway::family( $family_uid );
+        $family_uid = $family ? (string) $family->family_uid : $family_uid;
         $table = $wpdb->prefix . 'olama_family_financial_snapshots';
 
         if ( $academic_year_id > 0 ) {
-            $wpdb->delete( $table, [
-                'family_uid'       => $family_uid,
-                'academic_year_id' => $academic_year_id,
-            ], [ '%s', '%d' ] );
+            $wpdb->query( $wpdb->prepare(
+                "DELETE FROM {$table}
+                 WHERE academic_year_id = %d
+                   AND (family_uid = %s OR oracle_family_id = %s)",
+                $academic_year_id,
+                $family_uid,
+                $family ? (string) $family->oracle_family_id : ''
+            ) );
         } else {
-            // If year is 0/all, delete all snapshots for this family
-            $wpdb->delete( $table, [
-                'family_uid' => $family_uid,
-            ], [ '%s' ] );
+            $wpdb->query( $wpdb->prepare(
+                "DELETE FROM {$table}
+                 WHERE family_uid = %s OR oracle_family_id = %s",
+                $family_uid,
+                $family ? (string) $family->oracle_family_id : ''
+            ) );
         }
     }
 }

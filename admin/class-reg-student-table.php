@@ -30,48 +30,17 @@ class Olama_Reg_Student_Table extends WP_List_Table {
     }
 
     public function prepare_items(): void {
-        global $wpdb;
-
         $search  = sanitize_text_field( $_REQUEST['s'] ?? '' );
-        $like    = '%' . $wpdb->esc_like( $search ) . '%';
-
-        $where  = '1=1';
-        $params = [];
-
-        if ( $search ) {
-            $where   .= ' AND ( s.student_uid LIKE %s OR s.student_name LIKE %s OR s.national_id LIKE %s )';
-            $params[] = $like;
-            $params[] = $like;
-            $params[] = $like;
-        }
-
         $per_page = 20;
         $current  = $this->get_pagenum();
         $offset   = ( $current - 1 ) * $per_page;
-
-        $count_sql = "SELECT COUNT(*) FROM {$wpdb->prefix}olama_students s WHERE {$where}";
-        $total     = (int) ( $params ? $wpdb->get_var( $wpdb->prepare( $count_sql, ...$params ) ) : $wpdb->get_var( $count_sql ) );
-
-        $params[] = $per_page;
-        $params[] = $offset;
-
-        $sql = "SELECT s.*,
-                    g.grade_name, sec.section_name
-                FROM {$wpdb->prefix}olama_students s
-                LEFT JOIN (
-                    SELECT e1.* FROM {$wpdb->prefix}olama_student_enrollment e1
-                    WHERE e1.id = (
-                        SELECT MAX(e2.id) FROM {$wpdb->prefix}olama_student_enrollment e2
-                        WHERE e2.student_uid = e1.student_uid
-                    )
-                ) e ON e.student_uid = s.student_uid
-                LEFT JOIN {$wpdb->prefix}olama_sections sec ON sec.id = e.section_id
-                LEFT JOIN {$wpdb->prefix}olama_grades g ON g.id = sec.grade_id
-                WHERE {$where}
-                ORDER BY CAST( s.student_uid AS UNSIGNED ) DESC
-                LIMIT %d OFFSET %d";
-
-        $this->items = $wpdb->get_results( $wpdb->prepare( $sql, ...$params ) ) ?: [];
+        $args = [
+            'search'   => $search,
+            'per_page' => $per_page,
+            'offset'   => $offset,
+        ];
+        $total = Olama_Reg_Student::count_students( $args );
+        $this->items = Olama_Reg_Student::get_students_list( $args );
 
         $this->set_pagination_args( [
             'total_items' => $total,

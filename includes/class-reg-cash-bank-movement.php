@@ -75,6 +75,43 @@ class Olama_Reg_Cash_Bank_Movement {
         ] );
     }
 
+    /**
+     * Reconcile an approved physical cash count with the account ledger.
+     *
+     * The movement is intentionally not linked back to the cash session totals:
+     * it records the approved overage/shortage after the session calculation has
+     * been frozen, so it becomes the ledger reference for the next session.
+     */
+    public static function record_cash_session_variance(
+        int $session_id,
+        int $account_id,
+        float $difference,
+        string $phase,
+        string $movement_date,
+        string $notes = ''
+    ): int|\WP_Error {
+        $difference = round( $difference, 2 );
+        $phase = $phase === 'opening' ? 'opening' : 'closing';
+        if ( ! $session_id || ! $account_id || abs( $difference ) < 0.01 ) {
+            return new \WP_Error( 'invalid_cash_variance', __( 'The cash-session variance is invalid.', 'olama-registration' ) );
+        }
+
+        $is_overage = $difference > 0;
+
+        return self::record_movement( [
+            'account_id'      => $account_id,
+            'cash_session_id' => null,
+            'movement_type'   => 'cash_' . $phase . '_' . ( $is_overage ? 'overage' : 'shortage' ),
+            'source_type'     => 'cash_session',
+            'source_id'       => $session_id,
+            'direction'       => $is_overage ? 'in' : 'out',
+            'amount'          => abs( $difference ),
+            'movement_date'   => $movement_date,
+            'created_by'      => get_current_user_id(),
+            'notes'           => $notes,
+        ] );
+    }
+
     public static function record_transfer( int $from_account_id, int $to_account_id, float $amount, array $meta = [] ): int|\WP_Error {
         global $wpdb;
 
@@ -196,11 +233,23 @@ class Olama_Reg_Cash_Bank_Movement {
         global $wpdb;
 
         $account = $wpdb->get_row( $wpdb->prepare(
-            "SELECT opening_balance FROM " . self::t( 'olama_financial_accounts' ) . " WHERE id = %d",
+            "SELECT type, opening_balance FROM " . self::t( 'olama_financial_accounts' ) . " WHERE id = %d",
             $account_id
         ) );
         if ( ! $account ) {
             return 0.0;
+        }
+
+        /*
+         * An open cash session is the authoritative physical inventory for a
+         * cashbox. Its opening count replaces the historical ledger baseline;
+         * adding both would count the same cash twice.
+         */
+        if ( (string) $account->type === 'cash' ) {
+            $session_inventory = self::get_open_cash_inventory_balance( $account_id, $date_to );
+            if ( $session_inventory !== null ) {
+                return $session_inventory;
+            }
         }
 
         $where = 'account_id = %d AND status = %s';
@@ -218,6 +267,56 @@ class Olama_Reg_Cash_Bank_Movement {
         ) );
 
         return round( (float) $account->opening_balance + $net, 2 );
+    }
+
+    /**
+     * Return the physical inventory held by currently open cash sessions.
+     *
+     * Null means no applicable open session, so callers should fall back to
+     * the immutable account-movement ledger.
+     */
+    public static function get_open_cash_inventory_balance( int $account_id, ?string $date_to = null ): ?float {
+        global $wpdb;
+
+        $where = 's.account_id = %d AND s.status = %s';
+        $params = [ $account_id, 'open' ];
+        if ( $date_to ) {
+            $where .= ' AND s.session_date <= %s';
+            $params[] = sanitize_text_field( $date_to );
+        }
+
+        $session_count = (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::t( 'olama_cash_sessions' ) . " s WHERE {$where}",
+            ...$params
+        ) );
+        if ( $session_count === 0 ) {
+            return null;
+        }
+
+        $inventory = $wpdb->get_var( $wpdb->prepare(
+            "SELECT COALESCE(SUM(session_totals.expected_balance), 0)
+             FROM (
+                 SELECT
+                     s.id,
+                     s.opening_balance
+                         + COALESCE(SUM(
+                             CASE
+                                 WHEN m.direction = 'in' THEN m.amount
+                                 WHEN m.direction = 'out' THEN -m.amount
+                                 ELSE 0
+                             END
+                         ), 0) AS expected_balance
+                 FROM " . self::t( 'olama_cash_sessions' ) . " s
+                 LEFT JOIN " . self::t( 'olama_cash_bank_movements' ) . " m
+                        ON m.cash_session_id = s.id
+                       AND m.status = 'posted'
+                 WHERE {$where}
+                 GROUP BY s.id, s.opening_balance
+             ) session_totals",
+            ...$params
+        ) );
+
+        return round( (float) $inventory, 2 );
     }
 
     public static function get_movements( array $filters = [] ): array {

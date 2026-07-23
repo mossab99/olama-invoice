@@ -39,12 +39,19 @@ class Olama_Reg_Agreement {
         ];
 
         $insert_data = wp_parse_args( $data, $defaults );
+        $insert_data = self::normalize_identity_fields( $insert_data );
+        if ( $insert_data === false ) {
+            return false;
+        }
 
         // Ensure we don't pass null to not-null string fields if they are missing
         if ( empty( $insert_data['payer_type'] ) ) return false;
 
         if ( isset( $insert_data['participant_ids'] ) && is_array( $insert_data['participant_ids'] ) ) {
-            $insert_data['participant_ids'] = wp_json_encode( array_map( 'intval', $insert_data['participant_ids'] ) );
+            $insert_data['participant_ids'] = wp_json_encode( array_values( array_filter( array_map(
+                'sanitize_text_field',
+                $insert_data['participant_ids']
+            ) ) ) );
         } elseif ( empty( $insert_data['participant_ids'] ) && ! empty( $insert_data['participant_id'] ) ) {
             $insert_data['participant_ids'] = wp_json_encode( [ (int) $insert_data['participant_id'] ] );
         }
@@ -78,9 +85,28 @@ class Olama_Reg_Agreement {
         // Remove fields that shouldn't be updated here
         unset( $data['id'], $data['agreement_number'], $data['created_at'], $data['created_by'] );
         $data['updated_at'] = current_time( 'mysql' );
+        $identity_keys = [ 'payer_type', 'payer_id', 'payer_ref', 'family_uid', 'customer_id', 'participant_ids' ];
+        if ( array_intersect( $identity_keys, array_keys( $data ) ) ) {
+            $identity_input = array_merge( [
+                'payer_type'       => $before->payer_type ?? '',
+                'payer_id'         => $before->payer_id ?? '',
+                'payer_ref'        => $before->payer_ref ?? '',
+                'family_uid'       => $before->family_uid ?? '',
+                'customer_id'      => $before->customer_id ?? null,
+                'participant_ids'  => $before->participant_ids_array ?? [],
+                'academic_year_id' => $before->academic_year_id ?? 0,
+            ], $data );
+            $data = self::normalize_identity_fields( $identity_input );
+            if ( $data === false ) {
+                return false;
+            }
+        }
 
         if ( isset( $data['participant_ids'] ) && is_array( $data['participant_ids'] ) ) {
-            $data['participant_ids'] = wp_json_encode( array_map( 'intval', $data['participant_ids'] ) );
+            $data['participant_ids'] = wp_json_encode( array_values( array_filter( array_map(
+                'sanitize_text_field',
+                $data['participant_ids']
+            ) ) ) );
         }
 
         $updated = $wpdb->update( $table, $data, [ 'id' => $id ] );
@@ -277,13 +303,10 @@ class Olama_Reg_Agreement {
         $family_names = [];
         if ( ! empty( $family_payer_ids ) ) {
             $family_payer_ids = array_unique( $family_payer_ids );
-            $families_table = $wpdb->prefix . 'olama_families';
+            $families_table = $wpdb->prefix . 'olama_core_families';
             $uids_only = [];
             $ids_only = [];
             foreach ( $family_payer_ids as $fid ) {
-                if ( is_numeric( $fid ) ) {
-                    $ids_only[] = (int) $fid;
-                }
                 $uids_only[] = (string) $fid;
             }
             $prepare_args = [];
@@ -301,12 +324,15 @@ class Olama_Reg_Agreement {
             if ( ! empty( $where_parts ) ) {
                 $where_clause = implode( ' OR ', $where_parts );
                 $f_rows = $wpdb->get_results( $wpdb->prepare(
-                    "SELECT id, family_uid, family_name FROM {$families_table} WHERE {$where_clause}",
+                    "SELECT id, family_uid, oracle_family_id,
+                            COALESCE(NULLIF(sponsor_full_name, ''), NULLIF(father_name, ''), oracle_family_id) AS family_name
+                     FROM {$families_table}
+                     WHERE {$where_clause}",
                     ...$prepare_args
                 ) );
                 foreach ( $f_rows as $f_row ) {
-                    $family_names[ $f_row->id ] = $f_row->family_name;
                     $family_names[ $f_row->family_uid ] = $f_row->family_name;
+                    $family_names[ $f_row->oracle_family_id ] = $f_row->family_name;
                 }
             }
         }
@@ -353,13 +379,10 @@ class Olama_Reg_Agreement {
         $student_names = [];
         if ( ! empty( $student_participant_ids ) ) {
             $student_participant_ids = array_unique( $student_participant_ids );
-            $students_table = $wpdb->prefix . 'olama_students';
+            $students_table = $wpdb->prefix . 'olama_core_students';
             $uids_only = [];
             $ids_only = [];
             foreach ( $student_participant_ids as $sid ) {
-                if ( is_numeric( $sid ) ) {
-                    $ids_only[] = (int) $sid;
-                }
                 $uids_only[] = (string) $sid;
             }
             $prepare_args = [];
@@ -377,11 +400,12 @@ class Olama_Reg_Agreement {
             if ( ! empty( $where_parts ) ) {
                 $where_clause = implode( ' OR ', $where_parts );
                 $s_rows = $wpdb->get_results( $wpdb->prepare(
-                    "SELECT id, student_uid, student_name FROM {$students_table} WHERE {$where_clause}",
+                    "SELECT id, student_uid, oracle_student_id, student_name
+                     FROM {$students_table}
+                     WHERE {$where_clause}",
                     ...$prepare_args
                 ) );
                 foreach ( $s_rows as $s_row ) {
-                    $student_names[ $s_row->id ] = $s_row->student_name;
                     $student_names[ $s_row->student_uid ] = $s_row->student_name;
                 }
             }
@@ -517,6 +541,65 @@ class Olama_Reg_Agreement {
         );
     }
 
+    private static function normalize_identity_fields( array $data ): array|false {
+        $payer_type = sanitize_key( $data['payer_type'] ?? '' );
+        if ( ! in_array( $payer_type, [ 'family', 'customer' ], true ) ) {
+            return false;
+        }
+
+        $data['payer_type'] = $payer_type;
+
+        if ( $payer_type === 'family' ) {
+            $reference = sanitize_text_field(
+                $data['family_uid'] ?? $data['payer_ref'] ?? $data['payer_id'] ?? ''
+            );
+            $family = Olama_Reg_Core_Gateway::family( $reference );
+            if ( ! $family ) {
+                return false;
+            }
+
+            $data['payer_ref']       = $family->family_uid;
+            $data['payer_id']        = $family->family_uid; // Transitional read compatibility.
+            $data['family_uid']      = $family->family_uid;
+            $data['oracle_family_id'] = $family->oracle_family_id;
+            $data['customer_id']     = null;
+            $data['participant_type'] = 'student';
+            $data['participant_id']  = 0;
+
+            $participant_ids = is_array( $data['participant_ids'] ?? null )
+                ? $data['participant_ids']
+                : [];
+            foreach ( $participant_ids as $student_uid ) {
+                $student = Olama_Reg_Core_Gateway::student( sanitize_text_field( $student_uid ) );
+                if ( ! $student || $student->family_uid !== $family->family_uid ) {
+                    return false;
+                }
+            }
+        } else {
+            $reference = $data['customer_id'] ?? $data['payer_ref'] ?? $data['payer_id'] ?? '';
+            $customer = is_numeric( $reference )
+                ? Olama_Reg_Customer::get( (int) $reference )
+                : Olama_Reg_Customer::get_by_uid( sanitize_text_field( $reference ) );
+            if ( ! $customer ) {
+                return false;
+            }
+
+            $data['payer_ref']        = $customer->customer_uid;
+            $data['payer_id']         = (string) $customer->id; // Transitional read compatibility.
+            $data['family_uid']       = null;
+            $data['oracle_family_id'] = null;
+            $data['customer_id']      = (int) $customer->id;
+            $data['participant_type'] = 'child';
+        }
+
+        $academic_year_id = absint( $data['academic_year_id'] ?? 0 );
+        $data['study_year'] = $academic_year_id > 0
+            ? Olama_Reg_Academic_Year_Context::core_study_year( $academic_year_id )
+            : null;
+
+        return $data;
+    }
+
     // ── Helper Resolvers ───────────────────────────────────────────────────
 
     private static function resolve_payer_name( string $type, string $id ): string {
@@ -526,9 +609,8 @@ class Olama_Reg_Agreement {
             $name = $wpdb->get_var( $wpdb->prepare( "SELECT customer_name FROM {$table} WHERE customer_uid = %s OR id = %d", $id, (int)$id ) );
             return $name ? $name : 'Unknown Customer';
         } elseif ( $type === 'family' ) {
-            $table = $wpdb->prefix . 'olama_families';
-            $name = $wpdb->get_var( $wpdb->prepare( "SELECT family_name FROM {$table} WHERE family_uid = %s OR id = %d", $id, (int)$id ) );
-            return $name ? $name : 'Unknown Family';
+            $family = Olama_Reg_Core_Gateway::family( $id );
+            return $family ? $family->display_name : 'Unknown Family';
         }
         return '';
     }
@@ -540,9 +622,8 @@ class Olama_Reg_Agreement {
             $name = $wpdb->get_var( $wpdb->prepare( "SELECT child_name FROM {$table} WHERE child_uid = %s OR id = %d", $id, (int)$id ) );
             return $name ? $name : 'Unknown Child';
         } elseif ( $type === 'student' ) {
-            $table = $wpdb->prefix . 'olama_students';
-            $name = $wpdb->get_var( $wpdb->prepare( "SELECT student_name FROM {$table} WHERE student_uid = %s OR id = %d", $id, (int)$id ) );
-            return $name ? $name : 'Unknown Student';
+            $student = Olama_Reg_Core_Gateway::student( $id );
+            return $student ? $student->display_name : 'Unknown Student';
         }
         return '';
     }

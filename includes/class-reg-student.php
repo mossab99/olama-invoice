@@ -1,47 +1,72 @@
 <?php
 /**
- * Extended Student CRUD with auto-UID assignment
+ * Read-only student adapter backed by Olama Core.
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Olama_Reg_Student {
 
-    // ── Read ──────────────────────────────────────────────────────────────────
+    private static function normalize_core_student( array $row ): object {
+        $row['family_id']          = (string) ( $row['oracle_family_id'] ?? '' );
+        $row['student_id']         = (string) ( $row['oracle_student_id'] ?? '' );
+        $row['national_id']        = (string) ( $row['student_national_no'] ?? '' );
+        $row['gender']             = (string) ( $row['student_gender_name'] ?? $row['student_gender'] ?? '' );
+        $row['grade_name']         = (string) ( $row['class_name'] ?? '' );
+        $row['section_name']       = (string) ( $row['section_name'] ?? '' );
+        $row['academic_year_id']   = (string) ( $row['study_year'] ?? '' );
+        $row['enrollment_status']  = (string) ( $row['student_year_status'] ?? $row['student_status_name'] ?? $row['student_status'] ?? '' );
+        $row['sequence_in_family'] = is_numeric( $row['oracle_student_id'] ?? null )
+            ? (int) $row['oracle_student_id']
+            : 0;
+        $row['is_active'] = isset( $row['is_active'] )
+            ? (int) $row['is_active']
+            : ( empty( $row['will_not_renew'] ) ? 1 : 0 );
 
-    public static function get_student( string $student_uid ): ?object {
-        global $wpdb;
-        return $wpdb->get_row( $wpdb->prepare(
-            "SELECT s.*,
-                    f.family_uid, f.family_name AS father_first_name, '' AS father_family_name
-             FROM {$wpdb->prefix}olama_students s
-             LEFT JOIN {$wpdb->prefix}olama_families f ON f.family_uid = s.family_id
-             WHERE s.student_uid = %s",
-            $student_uid
-        ) ) ?: null;
+        return (object) $row;
     }
 
-    public static function get_family_students( string $family_uid ): array {
-        global $wpdb;
-        return $wpdb->get_results( $wpdb->prepare(
-            "SELECT s.*,
-                    e.section_id, e.academic_year_id, e.status AS enrollment_status,
-                    g.grade_name, sec.section_name
-             FROM {$wpdb->prefix}olama_students s
-             LEFT JOIN (
-                 SELECT e1.* FROM {$wpdb->prefix}olama_student_enrollment e1
-                 WHERE e1.id = (
-                     SELECT MAX(e2.id)
-                     FROM {$wpdb->prefix}olama_student_enrollment e2
-                     WHERE e2.student_uid = e1.student_uid
-                 )
-             ) e ON e.student_uid = s.student_uid
-             LEFT JOIN {$wpdb->prefix}olama_sections sec ON sec.id = e.section_id
-             LEFT JOIN {$wpdb->prefix}olama_grades g   ON g.id = sec.grade_id
-             WHERE s.family_id = %s AND s.student_uid NOT LIKE 'ext_%'
-             ORDER BY s.sequence_in_family ASC, s.id ASC",
-            $family_uid
-        ) ) ?: [];
+    public static function get_student( string $student_uid ): ?object {
+        $row = Olama_Reg_Core_Gateway::student( $student_uid );
+        return $row ? self::normalize_core_student( (array) $row ) : null;
+    }
+
+    public static function get_family_students( string $family_uid, $study_year = '' ): array {
+        $academic_year_id = is_numeric( $study_year ) ? (int) $study_year : 0;
+        if ( $study_year !== '' && $academic_year_id <= 0 ) {
+            global $wpdb;
+            $academic_year_id = (int) $wpdb->get_var( $wpdb->prepare(
+                "SELECT id FROM {$wpdb->prefix}olama_academic_years
+                 WHERE code = %s OR year_name = %s OR name_ar = %s
+                 LIMIT 1",
+                $study_year,
+                $study_year,
+                $study_year
+            ) );
+        }
+
+        return array_map(
+            static fn( object $student ): object => self::normalize_core_student( (array) $student ),
+            Olama_Reg_Core_Gateway::students_for_family( $family_uid, $academic_year_id )
+        );
+    }
+
+    public static function search( string $query, int $limit = 10 ): array {
+        return array_map(
+            static fn( object $student ): object => self::normalize_core_student( (array) $student ),
+            Olama_Reg_Core_Gateway::search_students( $query, $limit )
+        );
+    }
+
+    public static function get_students_list( array $args = [] ): array {
+        return array_map(
+            static fn( object $student ): object => self::normalize_core_student( (array) $student ),
+            Olama_Reg_Core_Gateway::list_students( $args )
+        );
+    }
+
+    public static function count_students( array $args = [] ): int {
+        return Olama_Reg_Core_Gateway::count_students( $args );
     }
 
     public static function get_student_photo_url( ?int $attachment_id ): string {
@@ -50,6 +75,4 @@ class Olama_Reg_Student {
         }
         return wp_get_attachment_url( $attachment_id ) ?: get_avatar_url( 0, [ 'size' => 150 ] );
     }
-
-
 }

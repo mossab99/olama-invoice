@@ -1,295 +1,305 @@
 <?php
 /**
- * Agreement Print View
+ * Print the live draft or immutable completed-contract snapshot.
  */
 
-if (!defined('ABSPATH')) {
-    exit;
+if ( ! defined( 'ABSPATH' ) ) exit;
+if ( ! current_user_can( 'manage_options' ) ) {
+    wp_die( esc_html__( 'Unauthorized', 'olama-registration' ) );
 }
 
-if (!current_user_can('manage_options')) {
-    wp_die(esc_html__('Unauthorized', 'olama-registration'));
+$id = absint( $_GET['id'] ?? 0 );
+$agreement = Olama_Reg_Agreement::get( $id );
+if ( ! $agreement ) {
+    wp_die( esc_html__( 'العقد غير موجود.', 'olama-registration' ) );
 }
 
-$id = (int) ($_GET['id'] ?? 0);
-$agreement = Olama_Reg_Agreement::get($id);
-
-if (!$agreement) {
-    echo '<p>' . esc_html__('العقد غير موجود.', 'olama-registration') . '</p>';
-    return;
-}
-
-$fees = Olama_Reg_Agreement_Fees::get_by_agreement($id);
-$clauses = Olama_Reg_Agreement_Clauses::get_by_agreement($id);
-
-// Get Payer Info
-$payer_name = $agreement->payer_name;
-$payer_phone = '';
-if ($agreement->payer_type === 'customer') {
-    $cust = Olama_Reg_Customer::get($agreement->payer_id);
-    if ($cust)
-        $payer_phone = $cust->phone;
+if ( ! empty( $agreement->contract_snapshot ) ) {
+    $contract_html = (string) $agreement->contract_snapshot;
+    $is_snapshot = true;
 } else {
-    global $wpdb;
-    $family = $wpdb->get_row($wpdb->prepare("SELECT father_mobile, mother_mobile FROM {$wpdb->prefix}olama_families WHERE family_uid = %s", $agreement->payer_id));
-    if ($family)
-        $payer_phone = $family->father_mobile ?: $family->mother_mobile;
+    $contract_html = Olama_Reg_Contract_Renderer::render( $agreement );
+    $is_snapshot = false;
+    if ( is_wp_error( $contract_html ) ) {
+        wp_die( esc_html( $contract_html->get_error_message() ) );
+    }
 }
 
-// Ensure JS/CSS only target this page for printing
+$posted_amendments = [];
+if ( class_exists( 'Olama_Reg_Agreement_Amendment' ) ) {
+    $posted_amendments = array_values( array_filter(
+        Olama_Reg_Agreement_Amendment::get_by_agreement( $id ),
+        static fn( $amendment ) => (string) ( $amendment->status ?? '' ) === 'posted'
+    ) );
+    $posted_amendments = array_reverse( $posted_amendments );
+
+    foreach ( $posted_amendments as $amendment ) {
+        $amendment->print_lines = Olama_Reg_Agreement_Amendment::get_lines( (int) $amendment->id );
+    }
+}
+
+$format_contract_money = static function ( $amount, bool $signed = false ): string {
+    $value = (float) $amount;
+    $prefix = $signed && $value > 0 ? '+' : '';
+    return $prefix . number_format( $value, 3 ) . ' د.أ';
+};
 ?>
 <style>
-    body { font-family: 'Tajawal', sans-serif; margin: 40px; color: #1a1a2e; background: #f9f9f9; }
-    .print-wrap { max-width: 800px; margin: 0 auto; background: #fff; border: 1px solid #e0c090; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(232,146,10,0.1); }
-    .header-table { width: 100%; border-collapse: collapse; margin-bottom: 30px; border-bottom: 2px solid #E8920A; padding-bottom: 20px; }
-    .header-table td { vertical-align: top; }
-    .logo-title { font-size: 24px; font-weight: 800; color: #E8920A; }
-    .invoice-title { font-size: 24px; font-weight: 800; text-align: left; color: #1a1a2e; }
-    .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 25px; }
-    .meta-table td { padding: 8px; border-bottom: 1px solid #f0f0f0; }
-    .label { font-weight: 700; color: #6B7280; width: 150px; }
-    .section-title { font-size: 18px; font-weight: 800; color: #E8920A; border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 15px; margin-top: 30px; }
-    .items-table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
-    .items-table th { background: #FFF3E0; color: #C4780A; font-weight: 700; padding: 10px; border: 1px solid #e0c090; text-align: right; }
-    .items-table td { padding: 10px; border: 1px solid #eee; }
-    .totals-table { width: 300px; margin-right: auto; margin-left: 0; border-collapse: collapse; }
-    .totals-table td { padding: 8px; border-bottom: 1px dashed #e0c090; }
-    .totals-table tr.grand-total td { font-weight: 800; font-size: 16px; color: #E8920A; border-bottom: 2px solid #E8920A; }
-    .signatures { margin-top: 60px; display: flex; justify-content: space-between; }
-    .signatures div { width: 40%; text-align: center; border-top: 1px dashed #ccc; padding-top: 15px; font-weight: 700; color: #6B7280; }
-    .no-print { text-align: center; margin-bottom: 20px; }
-    
+    body {
+        margin: 0;
+        background: #f4f5f7;
+        color: #17172f;
+        font-family: Tahoma, Arial, sans-serif;
+        line-height: 1.8;
+    }
+    .contract-toolbar {
+        box-sizing: border-box;
+        max-width: 920px;
+        margin: 20px auto;
+        padding: 12px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        background: #fff;
+        border: 1px solid #d9dee8;
+        border-radius: 8px;
+    }
+    .contract-document {
+        box-sizing: border-box;
+        max-width: 920px;
+        margin: 20px auto 50px;
+        padding: 42px 48px;
+        background: #fff;
+        border: 1px solid #d9dee8;
+        box-shadow: 0 5px 20px rgba(20, 26, 45, .08);
+    }
+    .contract-document h1 { color: #17172f; font-size: 25px; margin: 0 0 8px; }
+    .contract-document h2 {
+        color: #17172f;
+        font-size: 18px;
+        margin: 28px 0 12px;
+        padding: 8px 12px;
+        border-right: 4px solid #e8920a;
+        background: #fff8ec;
+    }
+    .contract-document h3 { color: #8a5607; margin: 22px 0 10px; }
+    .contract-document table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 12px 0 22px;
+        font-size: 13px;
+    }
+    .contract-document th,
+    .contract-document td {
+        border: 1px solid #d9dee8;
+        padding: 8px 10px;
+        text-align: right;
+        vertical-align: top;
+    }
+    .contract-document th { background: #f5f7fa; font-weight: 700; }
+    .contract-fee-amount {
+        min-width: 150px;
+        vertical-align: top;
+    }
+    .contract-fee-amount-details {
+        display: grid;
+        gap: 2px;
+        margin-top: 7px;
+        padding-top: 6px;
+        border-top: 1px dashed #cbd2dc;
+        font-size: 10px;
+        font-weight: 400;
+        color: #596273;
+    }
+    .contract-fee-amount-details em {
+        display: block;
+        margin-bottom: 2px;
+        color: #7a8494;
+        font-style: normal;
+        font-weight: 700;
+    }
+    .contract-fee-amount-details > div {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        line-height: 1.55;
+    }
+    .contract-fee-amount-details b {
+        color: #17172f;
+        font-size: 10px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .contract-document ol { padding-right: 24px; }
+    .contract-document li { margin-bottom: 7px; }
+    .contract-signatures {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 50px;
+        margin-top: 55px;
+    }
+    .contract-signatures > div { border-top: 1px dashed #8992a3; padding-top: 14px; }
+    .contract-record {
+        max-width: 920px;
+        margin: -35px auto 40px;
+        color: #667085;
+        font-size: 11px;
+        direction: ltr;
+        text-align: center;
+    }
+    .contract-amendments {
+        margin-top: 45px;
+        padding-top: 8px;
+        border-top: 3px solid #17172f;
+    }
+    .contract-amendments-intro {
+        margin: 0 0 18px;
+        padding: 10px 12px;
+        border: 1px solid #f1d59d;
+        background: #fffaf0;
+        color: #5f4a22;
+        font-size: 12px;
+    }
+    .contract-amendment {
+        margin: 0 0 28px;
+        padding: 16px;
+        border: 1px solid #cfd6e2;
+        border-radius: 6px;
+        break-inside: avoid;
+    }
+    .contract-amendment-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: baseline;
+        margin-bottom: 12px;
+    }
+    .contract-amendment-header strong { font-size: 16px; }
+    .contract-amendment-header span { color: #667085; font-size: 12px; direction: ltr; }
+    .contract-amendment-total {
+        font-weight: 700;
+        color: #8a5607;
+        white-space: nowrap;
+    }
+    .contract-money {
+        display: inline-block;
+        direction: ltr;
+        unicode-bidi: isolate;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+    }
+    .contract-amendment-signatures {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 50px;
+        margin-top: 34px;
+    }
+    .contract-amendment-signatures > div {
+        border-top: 1px dashed #8992a3;
+        padding-top: 10px;
+    }
     @media print {
-        body { margin: 0; background: none; }
-        .print-wrap { border: none; box-shadow: none; padding: 0; max-width: 100%; }
-        .no-print, #adminmenuwrap, #adminmenuback, #wpadminbar, #wpfooter, .notice, .update-nag { display: none !important; }
-        #wpcontent { margin-left: 0 !important; margin-right: 0 !important; padding: 0 !important; }
-        @page { margin: 1cm; }
+        body { background: #fff; }
+        .contract-toolbar, #adminmenuwrap, #adminmenuback, #wpadminbar, #wpfooter { display: none !important; }
+        #wpcontent { margin: 0 !important; padding: 0 !important; }
+        .contract-document { border: 0; box-shadow: none; max-width: none; margin: 0; padding: 0; }
+        .contract-record { margin: 20px 0 0; }
+        .contract-amendments { break-before: page; page-break-before: always; }
+        @page { size: A4; margin: 14mm; }
+    }
+    @media (max-width: 700px) {
+        .contract-document { margin: 0; padding: 24px 18px; }
+        .contract-signatures { grid-template-columns: 1fr; }
     }
 </style>
-<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;800&display=swap" rel="stylesheet">
 
-<div class="wrap">
-    <div class="no-print">
-        <a href="<?php echo esc_url(admin_url('admin.php?page=olama-registration-agreements&action=edit&id=' . $id)); ?>"
-            class="button">&laquo; <?php esc_html_e('العودة للعقد', 'olama-registration'); ?></a>
-        <button type="button" class="button button-primary" onclick="window.print();" style="margin-right:10px;">
-            <span class="dashicons dashicons-printer" style="margin-top:4px;"></span>
-            <?php esc_html_e('طباعة العقد', 'olama-registration'); ?>
-        </button>
-    </div>
-
-    <div class="print-wrap" id="os-print-area" dir="rtl">
-        <table class="header-table">
-            <tr>
-                <td>
-                    <?php 
-                    $school_settings = get_option('olama_school_settings', []);
-                    $school_name = !empty($school_settings['school_name_ar']) ? $school_settings['school_name_ar'] : __('نظام علماء', 'olama-registration');
-                    ?>
-                    <div class="logo-title"><?php echo esc_html($school_name); ?></div>
-                    <div style="font-size: 11px; color:#6B7280; margin-top:4px;"><?php esc_html_e('عقد تسجيل / نشاط', 'olama-registration'); ?></div>
-                </td>
-                <td style="text-align: left;">
-                    <div class="invoice-title"><?php echo esc_html($agreement->activity_type); ?></div>
-                    <div style="font-weight: 700; color: #6B7280; margin-top:4px;"><?php echo esc_html($agreement->agreement_number); ?></div>
-                </td>
-            </tr>
-        </table>
-
-        <table class="meta-table">
-            <tr>
-                <td class="label"><?php esc_html_e('الطرف الثاني (الجهة الدافعة):', 'olama-registration'); ?></td>
-                <td><?php echo esc_html($payer_name); ?> <?php echo $payer_phone ? ' ( ' . esc_html($payer_phone) . ' ) ' : ''; ?></td>
-                <td class="label"><?php esc_html_e('تاريخ الإصدار:', 'olama-registration'); ?></td>
-                <td><?php echo esc_html(date('Y-m-d', strtotime($agreement->created_at))); ?></td>
-            </tr>
-            <tr>
-                <td class="label"><?php esc_html_e('تاريخ البداية:', 'olama-registration'); ?></td>
-                <td><?php echo esc_html($agreement->start_date); ?></td>
-                <td class="label"><?php esc_html_e('تاريخ النهاية:', 'olama-registration'); ?></td>
-                <td><?php echo esc_html($agreement->end_date ?: '—'); ?></td>
-            </tr>
-            <tr>
-                <td class="label"><?php esc_html_e('المشترك:', 'olama-registration'); ?></td>
-                <td><strong><?php echo esc_html($agreement->participant_name); ?></strong></td>
-                <td class="label"><?php esc_html_e('الحالة:', 'olama-registration'); ?></td>
-                <td><strong><?php echo esc_html( Olama_Reg_Status_Labels::label( $agreement->status, 'agreement' ) ); ?></strong></td>
-            </tr>
-        </table>
-
-        <div class="os-print-section">
-            <div class="section-title"><?php esc_html_e('الرسوم المستحقة', 'olama-registration'); ?></div>
-            <?php 
-            if ($fees): 
-                $grouped_fees = [];
-                foreach ($fees as $fee) {
-                    $child_id = $fee->child_id ?: 0;
-                    if (!isset($grouped_fees[$child_id])) {
-                        $grouped_fees[$child_id] = [
-                            'child_name' => $child_id ? Olama_Reg_Agreement::resolve_participant_name($agreement->participant_type, (string)$child_id) : esc_html__('رسوم عامة / بدون تحديد مشترك', 'olama-registration'),
-                            'items' => []
-                        ];
-                    }
-                    $grouped_fees[$child_id]['items'][] = $fee;
-                }
-
-                foreach ($grouped_fees as $child_id => $group):
-                    ?>
-                    <h4 class="child-fees-title" style="margin-top: 20px; font-size:16px; color:#1a1a2e; border-right: 3px solid #E8920A; padding-right: 8px;">
-                        <?php echo esc_html($group['child_name']); ?>
-                    </h4>
-                    <table class="items-table">
-                        <thead>
-                            <tr>
-                                <th><?php esc_html_e('الرقم', 'olama-registration'); ?></th>
-                                <th><?php esc_html_e('البيان', 'olama-registration'); ?></th>
-                                <th><?php esc_html_e('تاريخ الاستحقاق', 'olama-registration'); ?></th>
-                                <th><?php esc_html_e('المبلغ (الأساسي)', 'olama-registration'); ?></th>
-                                <th><?php esc_html_e('الخصم', 'olama-registration'); ?></th>
-                                <th><?php esc_html_e('المبلغ (الصافي)', 'olama-registration'); ?></th>
-                                <th><?php esc_html_e('رقم الفاتورة', 'olama-registration'); ?></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php
-                            $i = 1;
-                            $child_net_total = 0;
-                            foreach ($group['items'] as $fee):
-                                $child_net_total += (float)$fee->net_amount;
-                                ?>
-                                <tr>
-                                    <td style="text-align:center;"><?php echo $i++; ?></td>
-                                    <td><?php echo esc_html($fee->label ?: $fee->fee_category); ?></td>
-                                    <td><?php echo esc_html($fee->due_date ?: '-'); ?></td>
-                                    <td style="text-align:left; vertical-align:top;">
-                                        <?php 
-                                        $showed_breakdown = false;
-                                        if (is_numeric($fee->fee_category) && $fee->fee_category > 0) {
-                                            $row_template = Olama_Reg_Billing_Fees::get_template((int)$fee->fee_category);
-                                            if ($row_template && !empty($row_template->items)) {
-                                                $showed_breakdown = true;
-                                                echo '<div style="font-size:12px; margin-bottom:5px;">';
-                                                foreach ($row_template->items as $item) {
-                                                    $desc = esc_html($item['description'] ?? '');
-                                                    $amt = number_format((float)($item['amount'] ?? 0), 3);
-                                                    echo "<div style='display:flex; justify-content:space-between;'><span>{$desc}:</span> <span>{$amt}</span></div>";
-                                                }
-                                                echo '<div style="border-top:1px dashed #ccc; margin-top:4px; padding-top:4px; display:flex; justify-content:space-between;"><strong>' . esc_html__('الإجمالي:', 'olama-registration') . '</strong> <strong>' . number_format((float) $fee->amount, 3) . '</strong></div>';
-                                                echo '</div>';
-                                            }
-                                        }
-                                        if (!$showed_breakdown) {
-                                            echo number_format((float) $fee->amount, 3); 
-                                        }
-                                        ?>
-                                    </td>
-                                    <td style="text-align:left;"><?php echo number_format((float) $fee->discount, 3); ?></td>
-                                    <td style="text-align:left;"><?php echo number_format((float) $fee->net_amount, 3); ?></td>
-                                    <td style="text-align:center;">
-                                        <?php 
-                                        if ($fee->paid_status === 'paid' && $fee->invoice_id) {
-                                            global $wpdb;
-                                            $invoice_num = $wpdb->get_var($wpdb->prepare("SELECT invoice_number FROM {$wpdb->prefix}olama_invoices WHERE id = %d", $fee->invoice_id));
-                                            echo esc_html($invoice_num ?: '-');
-                                        } else {
-                                            echo '-';
-                                        }
-                                        ?>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                        <tfoot>
-                            <tr>
-                                <th colspan="5" style="text-align:left;">
-                                    <?php esc_html_e('إجمالي رسوم المشترك:', 'olama-registration'); ?></th>
-                                <th style="text-align:left;">
-                                    <?php echo number_format($child_net_total, 3) . ' JD'; ?>
-                                </th>
-                                <th></th>
-                            </tr>
-                        </tfoot>
-                    </table>
-                <?php endforeach; ?>
-
-                <!-- Final aggregated total amount due for the entire agreement -->
-                <table class="totals-table" style="margin-top: 20px;">
-                    <tr class="grand-total">
-                        <td style="font-weight:800;"><?php esc_html_e('الإجمالي الكلي للعقد:', 'olama-registration'); ?></td>
-                        <td style="text-align:left; font-weight:800;"><?php echo number_format((float) $agreement->total_amount, 3); ?> JD</td>
-                    </tr>
-                    <?php 
-                    $actual_template_id = $agreement->template_id;
-                    if (empty($actual_template_id) && !empty($fees)) {
-                        // Try to find template id from fees
-                        foreach ($fees as $fee) {
-                            if (is_numeric($fee->fee_category) && $fee->fee_category > 0) {
-                                $actual_template_id = (int)$fee->fee_category;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!empty($actual_template_id)) {
-                        $fee_template = Olama_Reg_Billing_Fees::get_template($actual_template_id);
-                        if ($fee_template) {
-                            ?>
-                            <tr>
-                                <td colspan="2" style="text-align:center; font-weight:normal; background-color: #f9f9f9; border:none; padding:10px;">
-                                    <?php 
-                                    $template_name = esc_html($fee_template->template_name);
-                                    $installments = (int)$fee_template->installments;
-                                    $total_amount_formatted = number_format((float) $agreement->total_amount, 3);
-                                    
-                                    if ($installments > 1) {
-                                        echo sprintf(
-                                            esc_html__('بناءً على نموذج الرسوم (%s): مبلغ %s دينار مقسمة على %d دفعات.', 'olama-registration'),
-                                            $template_name,
-                                            $total_amount_formatted,
-                                            $installments
-                                        );
-                                    } else {
-                                        echo sprintf(
-                                            esc_html__('بناءً على نموذج الرسوم (%s)', 'olama-registration'),
-                                            $template_name
-                                        );
-                                    }
-                                    ?>
-                                </td>
-                            </tr>
-                            <?php
-                        }
-                    }
-                    ?>
-                </table>
-            <?php else: ?>
-                <p><?php esc_html_e('لا يوجد رسوم مسجلة لهذا العقد.', 'olama-registration'); ?></p>
-            <?php endif; ?>
-        </div>
-
-        <div class="os-print-section">
-            <div class="section-title"><?php esc_html_e('البنود والشروط', 'olama-registration'); ?></div>
-            <?php if ($clauses): ?>
-                <ol style="padding-right: 20px;">
-                    <?php foreach ($clauses as $clause): ?>
-                        <li style="margin-bottom: 10px;"><?php echo nl2br(esc_html($clause->clause_text)); ?></li>
-                    <?php endforeach; ?>
-                </ol>
-            <?php else: ?>
-                <p><?php esc_html_e('لا يوجد بنود مسجلة لهذا العقد.', 'olama-registration'); ?></p>
-            <?php endif; ?>
-        </div>
-
-        <div class="signatures">
-            <div>
-                <strong><?php esc_html_e('الطرف الأول', 'olama-registration'); ?></strong><br>
-                <?php esc_html_e('( التوقيع / الختم )', 'olama-registration'); ?>
-            </div>
-            <div>
-                <strong><?php esc_html_e('الطرف الثاني', 'olama-registration'); ?></strong><br>
-                <?php esc_html_e('( التوقيع )', 'olama-registration'); ?>
-            </div>
-        </div>
-    </div>
+<div class="contract-toolbar no-print" dir="rtl">
+    <a href="<?php echo esc_url( admin_url( 'admin.php?page=olama-registration-agreements&action=edit&id=' . $id ) ); ?>" class="button">
+        <?php esc_html_e( 'العودة إلى العقد', 'olama-registration' ); ?>
+    </a>
+    <span>
+        <?php echo $is_snapshot
+            ? esc_html__( 'نسخة العقد المثبتة', 'olama-registration' )
+            : esc_html__( 'معاينة مسودة — ستثبت النسخة عند الإكمال', 'olama-registration' ); ?>
+    </span>
+    <button type="button" class="button button-primary" onclick="window.print();"><?php esc_html_e( 'طباعة العقد', 'olama-registration' ); ?></button>
 </div>
+
+<article class="contract-document" dir="rtl">
+    <?php echo wp_kses_post( $contract_html ); ?>
+
+    <?php if ( $posted_amendments ) : ?>
+        <section class="contract-amendments" aria-label="ملحق التعديلات المالية">
+            <h2>ملحق التعديلات المالية المعتمدة</h2>
+            <p class="contract-amendments-intro">
+                تبقى نسخة العقد الأصلية المثبتة دون تغيير لأغراض التدقيق، وتعد التعديلات المالية المرحلة أدناه ملاحق مكملة للعقد وجزءاً من قيمته المالية الحالية.
+            </p>
+
+            <?php foreach ( $posted_amendments as $amendment ) : ?>
+                <section class="contract-amendment">
+                    <div class="contract-amendment-header">
+                        <strong>تعديل مالي رقم <?php echo esc_html( $amendment->amendment_no ); ?></strong>
+                        <span><?php echo esc_html( $amendment->effective_date ); ?></span>
+                    </div>
+
+                    <table>
+                        <tbody>
+                            <tr>
+                                <th>سبب التعديل</th>
+                                <td colspan="3"><?php echo esc_html( $amendment->reason ?: '—' ); ?></td>
+                            </tr>
+                            <tr>
+                                <th>قيمة العقد قبل التعديل</th>
+                                <td><span class="contract-money"><?php echo esc_html( $format_contract_money( $amendment->old_total ) ); ?></span></td>
+                                <th>قيمة التعديل</th>
+                                <td class="contract-amendment-total"><span class="contract-money"><?php echo esc_html( $format_contract_money( $amendment->difference_amount, true ) ); ?></span></td>
+                            </tr>
+                            <tr>
+                                <th>قيمة العقد بعد التعديل</th>
+                                <td colspan="3"><strong class="contract-money"><?php echo esc_html( $format_contract_money( $amendment->new_total ) ); ?></strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <?php if ( ! empty( $amendment->print_lines ) ) : ?>
+                        <h3>تفاصيل التعديل</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>البيان</th>
+                                    <th>القيمة السابقة</th>
+                                    <th>القيمة الجديدة</th>
+                                    <th>الفرق</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ( $amendment->print_lines as $line ) : ?>
+                                    <tr>
+                                        <td><?php echo esc_html( $line->description ?: '—' ); ?></td>
+                                        <td><span class="contract-money"><?php echo esc_html( $format_contract_money( $line->old_amount ) ); ?></span></td>
+                                        <td><span class="contract-money"><?php echo esc_html( $format_contract_money( $line->new_amount ) ); ?></span></td>
+                                        <td class="contract-amendment-total"><span class="contract-money"><?php echo esc_html( $format_contract_money( $line->difference_amount, true ) ); ?></span></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php endif; ?>
+
+                    <div class="contract-amendment-signatures">
+                        <div>اعتماد الأكاديمية</div>
+                        <div>إقرار ولي الأمر</div>
+                    </div>
+                </section>
+            <?php endforeach; ?>
+        </section>
+    <?php endif; ?>
+</article>
+
+<?php if ( $is_snapshot ) : ?>
+    <div class="contract-record">
+        Version <?php echo esc_html( (int) $agreement->template_version ); ?>
+        · <?php echo esc_html( $agreement->contract_generated_at ); ?>
+        · SHA-256 <?php echo esc_html( $agreement->contract_hash ); ?>
+    </div>
+<?php endif; ?>

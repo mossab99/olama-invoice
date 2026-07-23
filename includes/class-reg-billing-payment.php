@@ -50,15 +50,7 @@ class Olama_Reg_Billing_Payment {
             return new \WP_Error( 'overpayment', __( 'لا يمكن تسجيل دفعة أكبر من الرصيد المتبقي على الفاتورة.', 'olama-registration' ) );
         }
 
-        $family_uid = sanitize_text_field( $data['family_uid'] ?? '' );
-
-        // Resolve family_uid from invoice if not supplied
-        if ( ! $family_uid ) {
-            $family_uid = (string) $wpdb->get_var( $wpdb->prepare(
-                "SELECT family_uid FROM " . self::t( 'olama_invoices' ) . " WHERE id = %d",
-                $invoice_id
-            ) );
-        }
+        $family_uid = (string) ( $invoice->family_uid ?? '' );
 
         $payment_date = '';
         if ( ! empty( $data['payment_date'] ) ) {
@@ -121,11 +113,15 @@ class Olama_Reg_Billing_Payment {
             'cash_session_id'=> $cash_session_id,
             'invoice_id'     => $invoice_id,
             'installment_id' => absint( $data['installment_id'] ?? 0 ) ?: null,
+            'payer_type'     => (string) ( $invoice->payer_type ?? ( $family_uid ? 'family' : 'customer' ) ),
             'family_uid'     => $family_uid,
+            'oracle_family_id' => $invoice->oracle_family_id ?? null,
+            'customer_id'    => isset( $invoice->customer_id ) ? (int) $invoice->customer_id : null,
             'payment_date'   => $payment_date,
             'amount'         => $amount,
             'method'         => $method,
             'status'         => $status,
+            'oracle_sync_status' => 'not_required',
             'reference'      => sanitize_text_field( $data['reference'] ?? '' ) ?: null,
             'external_reference' => sanitize_text_field( $data['external_reference'] ?? '' ) ?: null,
             'received_by'    => get_current_user_id(),
@@ -245,11 +241,15 @@ class Olama_Reg_Billing_Payment {
             'cash_session_id'=> $reversal_cash_session_id,
             'invoice_id'     => $payment->invoice_id,
             'installment_id' => $payment->installment_id,
+            'payer_type'     => $payment->payer_type,
             'family_uid'     => $payment->family_uid,
+            'oracle_family_id' => $payment->oracle_family_id,
+            'customer_id'    => $payment->customer_id,
             'payment_date'   => date( 'Y-m-d' ),
             'amount'         => -1 * (float) $payment->amount,
             'method'         => 'reversal',
             'status'         => 'posted',
+            'oracle_sync_status' => 'not_required',
             'reference'      => 'REVERSAL-' . $id,
             'reversed_payment_id' => $id,
             'received_by'    => get_current_user_id(),
@@ -607,16 +607,10 @@ class Olama_Reg_Billing_Payment {
 
         $invoice = Olama_Reg_Billing_Invoice::get_invoice( (int) $payment->invoice_id );
 
-        // Try internal family first
-        $family = null;
-        if ( $payment->family_uid ) {
-            $family = $wpdb->get_row( $wpdb->prepare(
-                "SELECT family_uid, family_name AS father_first_name, '' AS father_family_name
-                 FROM {$wpdb->prefix}olama_families
-                 WHERE family_uid = %s",
-                $payment->family_uid
-            ) );
-        }
+        // Enrolled family profiles are read from Olama Core.
+        $family = $payment->family_uid
+            ? Olama_Reg_Family::get_family( (string) $payment->family_uid )
+            : null;
 
         // Fallback: look up external customer when family_uid is a CUST- code
         $ext_customer_name = null;

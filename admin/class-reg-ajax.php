@@ -19,7 +19,6 @@ class Olama_Reg_Ajax
             'olama_reg_delete_financial_row',
             'olama_reg_get_financial',
             'olama_reg_search',
-            'olama_reg_upload_photo',
             'olama_reg_save_fee_template',
             'olama_reg_delete_fee_template',
             'olama_reg_create_invoice',
@@ -62,10 +61,6 @@ class Olama_Reg_Ajax
             'olama_reg_agr_get_participants',
             'olama_reg_agr_save_fee',
             'olama_reg_agr_delete_fee',
-            'olama_reg_agr_add_clause',
-            'olama_reg_agr_save_clause',
-            'olama_reg_agr_delete_clause',
-            'olama_reg_agr_reorder_clauses',
             'olama_reg_agr_save_due_schedule',
             'olama_reg_agr_generate_due_schedule',
             'olama_reg_agr_create_amendment',
@@ -93,7 +88,6 @@ class Olama_Reg_Ajax
         add_action('wp_ajax_os_hub_save_profile', [$this, 'hub_save_profile']);
         add_action('wp_ajax_os_hub_toggle_active',[$this, 'hub_toggle_active']);
         add_action('wp_ajax_os_hub_add_child',    [$this, 'hub_add_child']);
-        add_action('wp_ajax_os_hub_add_family',   [$this, 'hub_add_family']);
         add_action('wp_ajax_os_hub_load_form',    [$this, 'hub_load_form']);
     }
 
@@ -453,28 +447,15 @@ class Olama_Reg_Ajax
     {
         $this->guard();
 
-        global $wpdb;
         $q = sanitize_text_field($_POST['q'] ?? '');
-        $like = '%' . $wpdb->esc_like($q) . '%';
-
-        $families = $wpdb->get_results($wpdb->prepare(
-            "SELECT family_uid, family_name AS father_first_name, '' AS father_family_name
-             FROM {$wpdb->prefix}olama_families
-             WHERE family_uid LIKE %s OR family_name LIKE %s
-             LIMIT 10",
-            $like,
-            $like
-        ));
-
-        $students = $wpdb->get_results($wpdb->prepare(
-            "SELECT student_uid, student_name, national_id, family_id
-             FROM {$wpdb->prefix}olama_students
-             WHERE student_uid LIKE %s OR student_name LIKE %s OR national_id LIKE %s
-             LIMIT 10",
-            $like,
-            $like,
-            $like
-        ));
+        $families = array_map(static function ($family) {
+            return (object) [
+                'family_uid'        => $family->uid,
+                'father_first_name' => $family->name,
+                'father_family_name'=> '',
+            ];
+        }, Olama_Reg_Family::search($q, 10));
+        $students = Olama_Reg_Student::search($q, 10);
 
         wp_send_json_success(['families' => $families, 'students' => $students]);
     }
@@ -794,6 +775,14 @@ class Olama_Reg_Ajax
                 $summary = (object)[ 'total_invoiced' => 0, 'total_paid' => 0, 'balance' => 0 ];
             }
         } else {
+            // The payment modal uses the human-facing Oracle file number from
+            // the Hub. Billing records are keyed by Core's canonical UID.
+            $family = Olama_Reg_Core_Gateway::family($family_uid);
+            if (!$family) {
+                wp_send_json_error(['message' => __('The selected family was not found in Olama Core.', 'olama-registration')]);
+            }
+            $family_uid = (string) $family->family_uid;
+
             $invoices = Olama_Reg_Billing_Invoice::get_family_invoices($family_uid, $year_id);
             $payments = Olama_Reg_Billing_Payment::get_family_payments($family_uid, $year_id);
             $summary = Olama_Reg_Billing_Invoice::get_invoice_summary($family_uid, $year_id);
@@ -1193,11 +1182,17 @@ class Olama_Reg_Ajax
         $participant_ids = [];
         if (isset($_POST['participant_id'])) {
             if (is_array($_POST['participant_id'])) {
-                $participant_ids = array_map('intval', $_POST['participant_id']);
-                $participant_id = $participant_ids[0] ?? 0;
+                $participant_ids = array_values(array_filter(array_map(
+                    'sanitize_text_field',
+                    wp_unslash($_POST['participant_id'])
+                )));
             } else {
-                $participant_id = (int) $_POST['participant_id'];
-                $participant_ids = [$participant_id];
+                $participant_ref = sanitize_text_field(wp_unslash($_POST['participant_id']));
+                $participant_ids = $participant_ref !== '' ? [$participant_ref] : [];
+            }
+
+            if (sanitize_key($_POST['payer_type'] ?? '') !== 'family') {
+                $participant_id = absint($participant_ids[0] ?? 0);
             }
         }
 
@@ -1215,6 +1210,13 @@ class Olama_Reg_Ajax
             'template_id' => absint($_POST['template_id'] ?? 0) ?: null,
         ];
 
+        $contract_template = $data['template_id']
+            ? Olama_Reg_Agreement_Templates::get((int) $data['template_id'])
+            : null;
+        if (!$contract_template || !(int) $contract_template->is_active) {
+            wp_send_json_error(['message' => __('يجب اختيار نموذج عقد مفعل.', 'olama-registration')]);
+        }
+
         $data['status'] = 'draft';
 
         if (empty($data['end_date'])) {
@@ -1223,7 +1225,6 @@ class Olama_Reg_Ajax
 
         if ($id > 0) {
             $old = Olama_Reg_Agreement::get($id);
-            $old_template_id = $old ? $old->template_id : null;
             if ($old && class_exists('Olama_Reg_Agreement_Policy')) {
                 $financial_edit = Olama_Reg_Agreement_Policy::can_edit_financial_fields($id);
                 if (is_wp_error($financial_edit)) {
@@ -1263,11 +1264,6 @@ class Olama_Reg_Ajax
 
             $result = Olama_Reg_Agreement::update($id, $data);
             if ($result) {
-                $existing_fees = Olama_Reg_Agreement_Fees::get_by_agreement($id);
-                if ($data['template_id'] && ($data['template_id'] != $old_template_id || empty($existing_fees))) {
-                    Olama_Reg_Agreement_Fees::apply_template_fees($id, $data['template_id']);
-                    Olama_Reg_Agreement_Invoice::generate_default_due_schedule($id);
-                }
                 $agreement = Olama_Reg_Agreement::get($id);
                 wp_send_json_success([
                     'message'          => __('تم تحديث العقد.', 'olama-registration'),
@@ -1278,21 +1274,7 @@ class Olama_Reg_Ajax
         } else {
             $id = Olama_Reg_Agreement::create($data);
             if ($id) {
-                if ($data['template_id']) {
-                    Olama_Reg_Agreement_Fees::apply_template_fees($id, $data['template_id']);
-                }
                 Olama_Reg_Agreement_Invoice::generate_default_due_schedule($id);
-
-                // Save clauses if passed
-                if ( ! empty( $_POST['clauses'] ) && is_array( $_POST['clauses'] ) ) {
-                    $sort_order = 1;
-                    foreach ( $_POST['clauses'] as $clause_text ) {
-                        $text = sanitize_textarea_field( $clause_text );
-                        if ( ! empty( $text ) ) {
-                            Olama_Reg_Agreement_Clauses::add( $id, $text, $sort_order++ );
-                        }
-                    }
-                }
 
                 $agreement = Olama_Reg_Agreement::get($id);
                 wp_send_json_success([
@@ -1333,17 +1315,6 @@ class Olama_Reg_Ajax
             ];
         }
 
-        // Fetch clauses
-        $clauses = Olama_Reg_Agreement_Clauses::get_by_agreement($id);
-        $clauses_data = [];
-        foreach ($clauses as $c) {
-            $clauses_data[] = [
-                'id' => $c->id,
-                'clause_text' => $c->clause_text,
-                'sort_order' => $c->sort_order,
-            ];
-        }
-
         $financial_status = 'open';
         $lock_reasons = [];
         $can_edit_financial_fields = true;
@@ -1376,7 +1347,6 @@ class Olama_Reg_Ajax
                 'lock_reasons' => $lock_reasons,
             ],
             'fees' => $fees_data,
-            'clauses' => $clauses_data,
         ]);
     }
 
@@ -1399,14 +1369,12 @@ class Olama_Reg_Ajax
             foreach ($rows as $r)
                 $results[] = ['id' => $r->id, 'text' => $r->text];
         } elseif ($payer_type === 'family') {
-            $table = $wpdb->prefix . 'olama_families';
-            $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT family_uid AS id, family_name AS text FROM {$table} WHERE family_name LIKE %s OR family_uid LIKE %s LIMIT 15",
-                $like,
-                $like
-            ));
-            foreach ($rows as $r)
-                $results[] = ['id' => $r->id, 'text' => $r->id . ' - ' . $r->text];
+            foreach (Olama_Reg_Family::search($q, 15) as $family) {
+                $results[] = [
+                    'id'   => $family->uid,
+                    'text' => $family->uid . ' - ' . $family->name,
+                ];
+            }
         }
 
         wp_send_json_success(['results' => $results]);
@@ -1438,10 +1406,12 @@ class Olama_Reg_Ajax
                     $results[] = ['id' => $r->id, 'text' => $r->text];
             }
         } elseif ($payer_type === 'family' && $payer_id) {
-            $table = $wpdb->prefix . 'olama_students';
-            $rows = $wpdb->get_results($wpdb->prepare("SELECT student_uid AS id, student_name AS text FROM {$table} WHERE family_id = %s", $payer_id));
-            foreach ($rows as $r)
-                $results[] = ['id' => $r->id, 'text' => $r->text];
+            foreach (Olama_Reg_Student::get_family_students($payer_id) as $student) {
+                $results[] = [
+                    'id'   => $student->student_uid,
+                    'text' => $student->student_name,
+                ];
+            }
         }
 
         wp_send_json_success(['results' => $results]);
@@ -1479,26 +1449,38 @@ class Olama_Reg_Ajax
         if (empty($data['due_date']))
             $data['due_date'] = null;
 
-        if ($data['discount'] < 0 || $data['discount'] > $data['amount']) {
-            wp_send_json_error(['message' => __('الخصم لا يجوز أن يتجاوز المبلغ الأصلي.', 'olama-registration')]);
-        }
-
         $template = is_numeric($data['fee_category']) ? Olama_Reg_Billing_Fees::get_template((int) $data['fee_category']) : null;
         if (!$template || ($template->subject_type ?? '') !== 'agreement') {
             wp_send_json_error(['message' => __('يجب اختيار نموذج عقد صالح من نماذج الرسوم المرتبطة بالعقود فقط.', 'olama-registration')]);
         }
 
+        // The template owns the gross amount and description. The agreement
+        // line may only add a participant, discount, and due date.
+        $data['label'] = (string) $template->template_name;
+        $data['amount'] = array_sum(array_map(
+            static fn($item) => (float) ($item['amount'] ?? 0),
+            (array) $template->items
+        ));
+
+        if ($data['discount'] < 0 || $data['discount'] > $data['amount']) {
+            wp_send_json_error(['message' => __('الخصم لا يجوز أن يتجاوز المبلغ الأصلي.', 'olama-registration')]);
+        }
+
         if ($id > 0) {
             $result = Olama_Reg_Agreement_Fees::update($id, $data);
             if ($result) {
-                Olama_Reg_Agreement_Invoice::generate_default_due_schedule($agreement_id);
+                if (!$is_fee_amendment) {
+                    Olama_Reg_Agreement_Invoice::generate_default_due_schedule($agreement_id);
+                }
                 wp_send_json_success(['message' => __('تم تحديث الرسم.', 'olama-registration'), 'total' => Olama_Reg_Agreement::get($agreement_id)->total_amount]);
             }
         } else {
             $data['agreement_id'] = $agreement_id;
             $new_id = Olama_Reg_Agreement_Fees::add($agreement_id, $data, $is_fee_amendment);
             if ($new_id) {
-                Olama_Reg_Agreement_Invoice::generate_default_due_schedule($agreement_id);
+                if (!$is_fee_amendment) {
+                    Olama_Reg_Agreement_Invoice::generate_default_due_schedule($agreement_id);
+                }
 
                 // If this is a fee amendment, create and auto-post an amendment
                 if ($is_fee_amendment && class_exists('Olama_Reg_Agreement_Amendment')) {
@@ -1989,10 +1971,12 @@ class Olama_Reg_Ajax
         }
 
         if ($payer_type === 'family') {
-            $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT student_uid AS id, student_name AS text FROM {$wpdb->prefix}olama_students WHERE family_id = %s",
-                $payer_uid
-            ));
+            $rows = array_map(static function ($student) {
+                return (object) [
+                    'id'   => $student->student_uid,
+                    'text' => $student->student_name,
+                ];
+            }, Olama_Reg_Student::get_family_students($payer_uid));
         } else {
             $rows = is_numeric($payer_uid)
                 ? $wpdb->get_results($wpdb->prepare(
@@ -2035,29 +2019,7 @@ class Olama_Reg_Ajax
 
     private function hub_search_families(string $query): array
     {
-        global $wpdb;
-        $like = '%' . $wpdb->esc_like($query) . '%';
-
-        $sql = "SELECT
-                    f.family_uid  AS uid,
-                    f.family_name AS name,
-                    COALESCE(f.father_mobile, f.mother_mobile, '') AS phone,
-                    f.is_active,
-                    COUNT(s.id)   AS student_count
-                FROM {$wpdb->prefix}olama_families f
-                LEFT JOIN {$wpdb->prefix}olama_students s
-                    ON s.family_id = f.family_uid AND s.is_active = 1
-                WHERE f.family_name   LIKE %s
-                   OR f.family_uid    LIKE %s
-                   OR f.father_mobile LIKE %s
-                   OR f.mother_mobile LIKE %s
-                GROUP BY f.id
-                ORDER BY f.family_name
-                LIMIT 20";
-
-        return $wpdb->get_results(
-            $wpdb->prepare($sql, $like, $like, $like, $like)
-        ) ?: [];
+        return Olama_Reg_Family::search($query, 20);
     }
 
     private function hub_search_customers(string $query): array
@@ -2114,17 +2076,16 @@ class Olama_Reg_Ajax
         global $wpdb;
 
         if ($type === 'family') {
-            // Check if family exists
-            $family_exists = $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM {$wpdb->prefix}olama_families WHERE family_uid = %s",
-                $uid
-            ));
-            if (!$family_exists) {
+            // Hub URLs/search use the Oracle file number, while financial
+            // records use Olama Core's canonical family UID.
+            $core_family = Olama_Reg_Core_Gateway::family($uid);
+            if (!$core_family) {
                 wp_send_json_error([
                     'code'    => 'not_found',
                     'message' => __('العائلة المحددة غير موجودة في النظام أو تم حذفها.', 'olama-registration'),
                 ]);
             }
+            $uid = (string) $core_family->family_uid;
 
             // Agreements
             $agr_sql  = "SELECT COUNT(*) FROM {$wpdb->prefix}olama_agreements
@@ -2158,10 +2119,9 @@ class Olama_Reg_Ajax
             $payments = (int) $wpdb->get_var($wpdb->prepare($pay_sql, $pay_args));
 
             // Children (students)
-            $children = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM {$wpdb->prefix}olama_students
-                  WHERE family_id = %s AND is_active = 1",
-                $uid
+            $children = count(array_filter(
+                Olama_Reg_Student::get_family_students($uid),
+                static fn($student) => (bool) $student->is_active
             ));
 
             // History / audit: count the financial records shown in the history tile.
@@ -2198,7 +2158,7 @@ class Olama_Reg_Ajax
             // Settlements (families only)
             $settle_sql = "SELECT COUNT(*) FROM {$wpdb->prefix}olama_settlement_receipts
                             WHERE family_id = %s";
-            $settle_args = [$uid];
+            $settle_args = [(string) $core_family->oracle_family_id];
             if ($year) {
                 // The table may store year via dates; check if academic_year_id column exists
                 $cols = $wpdb->get_col("DESCRIBE {$wpdb->prefix}olama_settlement_receipts", 0);
@@ -2216,17 +2176,15 @@ class Olama_Reg_Ajax
                 $financial = $summary->current_balance > 0.009 ? 1 : 0;
 
                 // Fetch Linked Student Names
-                $students_list = $wpdb->get_results($wpdb->prepare(
-                    "SELECT student_name FROM {$wpdb->prefix}olama_students 
-                     WHERE family_id = %s AND is_active = 1 
-                     ORDER BY sequence_in_family ASC",
-                    $uid
-                ));
+                $students_list = array_filter(
+                    Olama_Reg_Student::get_family_students($uid),
+                    static fn($student) => (bool) $student->is_active
+                );
                 $students_str = implode('، ', wp_list_pluck($students_list, 'student_name'));
 
                 // Build family financial card payload
                 $family_card_data = [
-                    'family_uid'      => $uid,
+                    'family_uid'      => (string) $core_family->oracle_family_id,
                     'total_fees'      => (float) $summary->total_fees,
                     'total_billed'    => (float) $summary->gross_invoiced,
                     'total_paid'      => (float) $summary->total_paid,
@@ -2414,6 +2372,17 @@ class Olama_Reg_Ajax
             $year   = $active ? (int) $active->id : 0;
         }
 
+        if ($type === 'family') {
+            $core_family = Olama_Reg_Core_Gateway::family($uid);
+            if (!$core_family) {
+                wp_send_json_error([
+                    'code'    => 'not_found',
+                    'message' => __('The selected family was not found in Olama Core.', 'olama-registration'),
+                ]);
+            }
+            $uid = (string) $core_family->family_uid;
+        }
+
         // Settlement tile only for families
         if ($tile === 'settlements' && $type !== 'family') {
             wp_send_json_error(['message' => __('هذا القسم للعائلات فقط.', 'olama-registration')]);
@@ -2476,15 +2445,20 @@ class Olama_Reg_Ajax
             // ── Data view ──────────────────────────────────────────────────
             $html  = '<div class="os-hub-profile-wrap" data-uid="' . esc_attr($uid) . '" data-type="family">';
 
-            // Action bar
+            // Core owns enrolled-family profile data. Keep this module read-only.
+            $core_family_url = add_query_arg(
+                [
+                    'page'       => 'olama-core-family-360',
+                    'family_id'  => (int) $row->family_uid,
+                    'study_year' => Olama_Reg_Academic_Year_Context::core_study_year($year),
+                ],
+                admin_url('admin.php')
+            );
             $html .= '<div class="os-hub-profile-actions">';
-            $html .= '<button type="button" class="button os-hub-edit-btn" id="os-hub-profile-edit-btn">';
-            $html .= '<span class="dashicons dashicons-edit" aria-hidden="true"></span> ' . __('تعديل', 'olama-registration');
-            $html .= '</button>';
-            $html .= ' <button type="button" class="button os-hub-toggle-active-btn" data-active="' . ($is_active ? '1' : '0') . '">';
-            $html .= '<span class="dashicons ' . ($is_active ? 'dashicons-lock' : 'dashicons-unlock') . '" aria-hidden="true"></span> ';
-            $html .= $is_active ? __('تعطيل', 'olama-registration') : __('تفعيل', 'olama-registration');
-            $html .= '</button>';
+            $html .= '<a class="button" href="' . esc_url($core_family_url) . '">';
+            $html .= '<span class="dashicons dashicons-external" aria-hidden="true"></span> ';
+            $html .= __('فتح العائلة في Olama Core', 'olama-registration');
+            $html .= '</a>';
             $html .= '</div>'; // .os-hub-profile-actions
 
             // Read-only view
@@ -2621,10 +2595,7 @@ class Olama_Reg_Ajax
         // Resolve agreements count safely
         $args = [];
         if ( ! empty( $payer_id ) ) {
-            $family_exists = $wpdb->get_var( $wpdb->prepare(
-                "SELECT COUNT(*) FROM {$wpdb->prefix}olama_families WHERE family_uid = %s",
-                $payer_id
-            ) );
+            $family_exists = Olama_Reg_Family::get_family( $payer_id );
             if ( $family_exists ) {
                 $args['payer_type'] = 'family';
                 $args['payer_id']   = $payer_id;
@@ -2678,7 +2649,9 @@ class Olama_Reg_Ajax
             $args[] = $year;
         }
 
-        $query = "SELECT i.*, COALESCE(f.family_name, c.customer_name, '') AS father_first_name, '' AS father_family_name,
+        $query = "SELECT i.*,
+                         COALESCE(NULLIF(f.sponsor_full_name, ''), NULLIF(f.father_name, ''), c.customer_name, '') AS father_first_name,
+                         '' AS father_family_name,
                          ft.template_name AS fee_template_name,
                          ft.subject_type AS fee_subject_type,
                          ft.subject_value AS fee_subject_value,
@@ -2686,11 +2659,13 @@ class Olama_Reg_Ajax
                          s.student_name AS direct_student_name,
                          ec.child_name AS direct_child_name
                   FROM " . $wpdb->prefix . "olama_invoices i
-                  LEFT JOIN " . $wpdb->prefix . "olama_families f ON f.family_uid = i.family_uid
+                  LEFT JOIN " . $wpdb->prefix . "olama_core_families f
+                    ON f.family_uid = i.family_uid
+                    OR (i.oracle_family_id IS NOT NULL AND f.oracle_family_id = i.oracle_family_id)
                   LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.id = i.ext_customer_id OR c.customer_uid = i.family_uid
                   LEFT JOIN " . $wpdb->prefix . "olama_fee_templates ft ON ft.id = i.fee_template_id
                   LEFT JOIN " . $wpdb->prefix . "olama_agreements a ON a.id = i.agreement_id
-                  LEFT JOIN " . $wpdb->prefix . "olama_students s ON s.student_uid = i.student_uid
+                  LEFT JOIN " . $wpdb->prefix . "olama_core_students s ON s.student_uid = i.student_uid
                   LEFT JOIN " . $wpdb->prefix . "olama_customer_children ec ON ec.id = i.ext_child_id
                   WHERE {$where}
                   ORDER BY i.issue_date DESC, i.id DESC
@@ -2729,14 +2704,15 @@ class Olama_Reg_Ajax
                     $covered_children = $wpdb->get_col($wpdb->prepare(
                         "SELECT DISTINCT s.student_name
                          FROM {$wpdb->prefix}olama_agreement_fees af
-                         LEFT JOIN {$wpdb->prefix}olama_students s
+                         LEFT JOIN {$wpdb->prefix}olama_core_students s
                             ON s.student_uid = af.child_id
-                            OR s.id = CAST(af.child_id AS UNSIGNED)
+                            OR (s.family_uid = %s AND s.oracle_student_id = af.child_id)
                          WHERE af.agreement_id = %d
                            AND af.child_id IS NOT NULL
                            AND af.child_id != ''
                            AND s.student_name IS NOT NULL
                          ORDER BY s.student_name ASC",
+                        $uid,
                         (int) $invoice_row->agreement_id
                     )) ?: [];
                 } else {
@@ -2832,7 +2808,7 @@ class Olama_Reg_Ajax
         $rows = $wpdb->get_results(
             $wpdb->prepare(
                 "SELECT p.id, p.payment_no, p.invoice_id, p.payment_date, p.amount, p.method, p.status, p.reference,
-                        p.reversed_payment_id, p.received_by, p.notes, p.family_uid,
+                        p.reversed_payment_id, p.received_by, p.notes, p.family_uid, p.oracle_family_id,
                         i.invoice_number, p.amount AS payment_amount,
                         u.display_name AS received_by_name
                  FROM {$wpdb->prefix}olama_payments p
@@ -2855,10 +2831,8 @@ class Olama_Reg_Ajax
         // Get payer name (family name or customer name) for the active dashboard profile
         $payer_name = '';
         if ($type === 'family') {
-            $payer_name = $wpdb->get_var($wpdb->prepare(
-                "SELECT family_name FROM {$wpdb->prefix}olama_families WHERE family_uid = %s",
-                $uid
-            ));
+            $family = Olama_Reg_Family::get_family($uid);
+            $payer_name = $family ? $family->family_name : '';
         } else {
             $payer_name = $wpdb->get_var($wpdb->prepare(
                 "SELECT customer_name FROM {$wpdb->prefix}olama_customers WHERE customer_uid = %s",
@@ -2915,7 +2889,7 @@ class Olama_Reg_Ajax
             $html .= '<td><span style="font-weight:700; color:var(--reg-text-muted);">' . esc_html(Olama_Reg_Billing_Payment::get_receipt_number($r)) . '</span></td>';
             $html .= '<td style="color:var(--reg-text-muted);">' . esc_html($r->payment_date) . '</td>';
             $html .= '<td><strong>' . esc_html($r->invoice_number ?: '—') . '</strong></td>';
-            $html .= '<td><span class="olama-reg-uid-badge">' . esc_html($r->family_uid) . '</span></td>';
+            $html .= '<td><span class="olama-reg-uid-badge">' . esc_html($r->oracle_family_id ?: $r->family_uid) . '</span></td>';
             $html .= '<td>' . esc_html($payer_name) . '</td>';
             $html .= '<td style="' . ($is_reversal ? 'color:#d63638;' : 'color:var(--reg-success);') . ' font-weight:800; font-size:15px;" dir="ltr">';
             $html .= number_format((float)$r->amount, 2) . '</td>';
@@ -2966,14 +2940,15 @@ class Olama_Reg_Ajax
         global $wpdb;
 
         if ($type === 'family') {
-            $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT student_uid AS uid, student_name AS name,
-                        '' AS grade, '' AS section, is_active
-                 FROM {$wpdb->prefix}olama_students
-                 WHERE family_id = %s
-                 ORDER BY sequence_in_family, student_name",
-                $uid
-            ));
+            $rows = array_map(static function ($student) {
+                return (object) [
+                    'uid'       => $student->student_uid,
+                    'name'      => $student->student_name,
+                    'grade'     => $student->grade_name,
+                    'section'   => $student->section_name,
+                    'is_active' => $student->is_active,
+                ];
+            }, Olama_Reg_Student::get_family_students($uid));
             $label_uid  = __('رقم الطالب', 'olama-registration');
             $label_name = __('اسم الطالب', 'olama-registration');
         } else {
@@ -3274,22 +3249,13 @@ class Olama_Reg_Ajax
         $summary = $report['summary'] ?? [];
         $entity  = $report['entity'] ?? ['uid' => $uid, 'name' => ''];
 
-        $labels = [
-            'invoice'          => __('فاتورة', 'olama-registration'),
-            'payment'          => __('دفعة', 'olama-registration'),
-            'payment_reversal' => __('عكس دفعة', 'olama-registration'),
-            'credit'           => __('إشعار دائن', 'olama-registration'),
-            'debit'            => __('إشعار مدين', 'olama-registration'),
-        ];
-
         // Fetch students for family filtering
         $students = [];
         if ($type === 'family') {
-            global $wpdb;
-            $students = $wpdb->get_results($wpdb->prepare(
-                "SELECT student_uid, student_name FROM {$wpdb->prefix}olama_students WHERE family_id = %s AND is_active = 1",
-                $uid
-            )) ?: [];
+            $students = array_values(array_filter(
+                Olama_Reg_Student::get_family_students($uid),
+                static fn($student) => (bool) $student->is_active
+            ));
         }
 
         $html  = '<div class="os-hub-financial-summary os-hub-statement-summary">';
@@ -3329,7 +3295,10 @@ class Olama_Reg_Ajax
             foreach ($rows as $row) {
                 $html .= '<tr>';
                 $html .= '<td>' . esc_html($row->movement_date ?: '—') . '</td>';
-                $html .= '<td>' . esc_html($labels[$row->entry_type] ?? $row->entry_type) . '</td>';
+                $html .= '<td>' . esc_html(Olama_Reg_Billing_Reports::format_statement_entry_type(
+                    (string) $row->entry_type,
+                    (string) ($row->entry_subtype ?? '')
+                )) . '</td>';
                 $html .= '<td><strong>' . esc_html($row->reference_no ?: '—') . '</strong></td>';
                 $html .= '<td>' . esc_html($row->details ?: '—') . '</td>';
                 $html .= '<td style="color:#c62828;" dir="ltr">' . ($row->debit_amount > 0 ? esc_html(number_format((float) $row->debit_amount, 2)) : '—') . '</td>';
@@ -3745,7 +3714,8 @@ class Olama_Reg_Ajax
         }
 
         global $wpdb;
-        $args  = [$uid];
+        $family = Olama_Reg_Core_Gateway::family($uid);
+        $args  = [$family ? (string) $family->oracle_family_id : $uid];
         $yc    = '';
 
         if ($year) {
@@ -3760,9 +3730,10 @@ class Olama_Reg_Ajax
             "SELECT r.id, r.receipt_number, r.family_id, r.payment_category, r.original_amount,
                     r.settled_amount, r.remaining_balance, r.payment_method,
                     r.oracle_receipt_number, r.settlement_date, r.status, r.created_at,
-                    f.family_name AS father_first_name, '' AS father_family_name
+                    COALESCE(NULLIF(f.sponsor_full_name, ''), NULLIF(f.father_name, ''), r.family_id) AS father_first_name,
+                    '' AS father_family_name
              FROM {$wpdb->prefix}olama_settlement_receipts r
-             LEFT JOIN {$wpdb->prefix}olama_families f ON f.family_uid = r.family_id
+             LEFT JOIN {$wpdb->prefix}olama_core_families f ON f.oracle_family_id = r.family_id
              WHERE r.family_id = %s {$yc}
              ORDER BY r.id DESC
              LIMIT 50",
@@ -3905,6 +3876,13 @@ class Olama_Reg_Ajax
         $this->hub_guard();
         $this->hub_require_caps(['olama_manage_registration_families']);
 
+        wp_send_json_error([
+            'message' => __(
+                'Enrolled families are managed in Olama Core. Open the family there to create or edit it.',
+                'olama-registration'
+            ),
+        ]);
+
         global $wpdb;
 
         $family_uid    = sanitize_text_field($_POST['family_uid'] ?? '');
@@ -3980,6 +3958,15 @@ class Olama_Reg_Ajax
 
         if (! $uid) {
             wp_send_json_error(['message' => __('معرف غير صالح.', 'olama-registration')]);
+        }
+
+        if ($type === 'family') {
+            wp_send_json_error([
+                'message' => __(
+                    'Enrolled family profiles are read-only here and must be edited in Olama Core.',
+                    'olama-registration'
+                ),
+            ]);
         }
 
         global $wpdb;
@@ -4066,6 +4053,15 @@ class Olama_Reg_Ajax
 
         if (! $uid) {
             wp_send_json_error(['message' => __('معرف غير صالح.', 'olama-registration')]);
+        }
+
+        if ($type === 'family') {
+            wp_send_json_error([
+                'message' => __(
+                    'Enrolled family status is owned by Olama Core and cannot be changed here.',
+                    'olama-registration'
+                ),
+            ]);
         }
 
         global $wpdb;

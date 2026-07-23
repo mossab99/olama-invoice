@@ -35,6 +35,27 @@ class Olama_Reg_Agreement_Invoice {
             return new \WP_Error( 'not_found', __( 'العقد غير موجود.', 'olama-registration' ) );
         }
 
+        if ( $skip_lock_check ) {
+            $existing_schedule = self::get_due_schedule( $agreement_id );
+            $has_allocated_payments = array_sum( array_map(
+                static fn( $line ) => (float) ( $line->amount_paid ?? 0 ),
+                $existing_schedule
+            ) ) > 0.009;
+
+            if ( $has_allocated_payments ) {
+                $requested_dates = array_values( array_filter( array_map(
+                    static fn( $line ) => self::sanitize_date( (string) ( $line['due_date'] ?? '' ) ),
+                    $lines
+                ) ) );
+
+                return self::redistribute_unpaid_balance(
+                    $agreement_id,
+                    $requested_dates ? min( $requested_dates ) : current_time( 'Y-m-d' ),
+                    count( $lines )
+                );
+            }
+        }
+
         if ( ! $skip_lock_check ) {
             if ( class_exists( 'Olama_Reg_Agreement_Policy' ) ) {
                 $allowed = Olama_Reg_Agreement_Policy::can_reschedule_installments( $agreement_id );
@@ -112,6 +133,20 @@ class Olama_Reg_Agreement_Invoice {
             return new \WP_Error( 'not_found', __( 'العقد غير موجود.', 'olama-registration' ) );
         }
 
+        $existing_schedule = self::get_due_schedule( $agreement_id );
+        $has_allocated_payments = array_sum( array_map(
+            static fn( $line ) => (float) ( $line->amount_paid ?? 0 ),
+            $existing_schedule
+        ) ) > 0.009;
+
+        if ( $skip_lock_check && $has_allocated_payments ) {
+            return self::redistribute_unpaid_balance(
+                $agreement_id,
+                current_time( 'Y-m-d' ),
+                $count
+            );
+        }
+
         if ( $count <= 0 ) {
             $count = (int) apply_filters( 'olama_reg_agreement_default_installments', self::DEFAULT_INSTALLMENTS, $agreement );
         }
@@ -134,7 +169,9 @@ class Olama_Reg_Agreement_Invoice {
         }
 
         $days_span = max( 0, (int) $start_dt->diff( $end_dt )->days );
-        $base = $count > 0 ? floor( ( $total / $count ) * 100 ) / 100 : $total;
+        // Round regular installments to the nearest qirsh (two decimals).
+        // The final installment absorbs the rounding difference.
+        $base = $count > 0 ? round( $total / $count, 2 ) : $total;
         $lines = [];
         $allocated = 0.0;
 
@@ -156,6 +193,198 @@ class Olama_Reg_Agreement_Invoice {
         }
 
         return self::save_due_schedule( $agreement_id, $lines, 0, $skip_lock_check );
+    }
+
+    /**
+     * Preserve paid installments and redistribute only the outstanding
+     * agreement balance over the remaining installments and contract period.
+     *
+     * Existing rows that contain allocations are updated in place so payment
+     * allocation references remain valid.
+     */
+    public static function redistribute_unpaid_balance(
+        int $agreement_id,
+        string $effective_date = '',
+        int $total_installments = 0
+    ): bool|\WP_Error {
+        global $wpdb;
+
+        $agreement = Olama_Reg_Agreement::get( $agreement_id );
+        if ( ! $agreement ) {
+            return new \WP_Error( 'not_found', __( 'العقد غير موجود.', 'olama-registration' ) );
+        }
+
+        $schedule = self::get_due_schedule( $agreement_id );
+        if ( empty( $schedule ) ) {
+            return self::generate_default_due_schedule(
+                $agreement_id,
+                $total_installments > 0 ? $total_installments : self::DEFAULT_INSTALLMENTS,
+                true
+            );
+        }
+
+        $invoice_id = (int) ( $schedule[0]->invoice_id ?? 0 );
+        if ( $invoice_id <= 0 && class_exists( 'Olama_Reg_Agreement_Policy' ) ) {
+            $invoice_id = Olama_Reg_Agreement_Policy::get_linked_invoice_id( $agreement_id );
+        }
+
+        $paid_total = round( array_sum( array_map(
+            static fn( $line ) => (float) ( $line->amount_paid ?? 0 ),
+            $schedule
+        ) ), 2 );
+        $agreement_total = round( (float) $agreement->total_amount, 2 );
+
+        if ( $agreement_total + 0.009 < $paid_total ) {
+            return new \WP_Error(
+                'agreement_total_below_paid',
+                __( 'لا يمكن إعادة توزيع الاستحقاقات لأن قيمة العقد الجديدة أقل من المبلغ المدفوع.', 'olama-registration' )
+            );
+        }
+
+        $settled = [];
+        $partial = [];
+        $unpaid = [];
+
+        foreach ( $schedule as $line ) {
+            $due = round( (float) $line->amount_due, 2 );
+            $paid = round( (float) $line->amount_paid, 2 );
+
+            if ( $due > 0 && $paid + 0.009 >= $due ) {
+                $settled[] = $line;
+            } elseif ( $paid > 0 ) {
+                $partial[] = $line;
+            } else {
+                $unpaid[] = $line;
+            }
+        }
+
+        $outstanding = max( 0.0, round( $agreement_total - $paid_total, 2 ) );
+        $requested_total = $total_installments > 0 ? $total_installments : count( $schedule );
+        $remaining_count = $outstanding > 0
+            ? max( 1, $requested_total - count( $settled ), count( $partial ) )
+            : count( $partial );
+
+        $remaining_rows = array_merge( $partial, $unpaid );
+        $kept_rows = array_slice( $remaining_rows, 0, $remaining_count );
+        $removed_rows = array_slice( $remaining_rows, $remaining_count );
+
+        foreach ( $removed_rows as $line ) {
+            if ( (float) $line->amount_paid > 0 ) {
+                return new \WP_Error(
+                    'paid_installment_removal_blocked',
+                    __( 'لا يمكن حذف قسط مرتبط بدفعة أثناء إعادة التوزيع.', 'olama-registration' )
+                );
+            }
+
+            if ( false === $wpdb->delete(
+                self::t( 'olama_invoice_installments' ),
+                [ 'id' => (int) $line->id ],
+                [ '%d' ]
+            ) ) {
+                return new \WP_Error( 'installment_delete_failed', __( 'تعذر تحديث عدد الأقساط المتبقية.', 'olama-registration' ) );
+            }
+        }
+
+        while ( count( $kept_rows ) < $remaining_count ) {
+            $inserted = $wpdb->insert(
+                self::t( 'olama_invoice_installments' ),
+                [
+                    'invoice_id'     => $invoice_id ?: null,
+                    'agreement_id'   => $agreement_id,
+                    'installment_no' => count( $schedule ) + count( $kept_rows ) + 1,
+                    'due_date'       => current_time( 'Y-m-d' ),
+                    'amount_due'     => 0.00,
+                    'amount_paid'    => 0.00,
+                    'status'         => 'unpaid',
+                ],
+                [ '%d', '%d', '%d', '%s', '%f', '%f', '%s' ]
+            );
+
+            if ( ! $inserted ) {
+                return new \WP_Error( 'installment_insert_failed', __( 'تعذر إنشاء قسط متبقٍ جديد.', 'olama-registration' ) );
+            }
+
+            $kept_rows[] = $wpdb->get_row( $wpdb->prepare(
+                "SELECT * FROM " . self::t( 'olama_invoice_installments' ) . " WHERE id = %d",
+                (int) $wpdb->insert_id
+            ) );
+        }
+
+        if ( $remaining_count > 0 ) {
+            $anchor = self::sanitize_date( $effective_date ?: current_time( 'Y-m-d' ) );
+            $anchor = $anchor ?: current_time( 'Y-m-d' );
+            $future_dates = array_values( array_filter( array_map(
+                static fn( $line ) => self::sanitize_date( (string) ( $line->due_date ?? '' ) ),
+                $kept_rows
+            ), static fn( $date ) => $date !== '' && $date >= $anchor ) );
+
+            $period_start = $future_dates ? min( $future_dates ) : $anchor;
+            $period_end = self::sanitize_date( (string) ( $agreement->end_date ?? '' ) );
+            if ( ! $period_end ) {
+                $period_end = self::sanitize_date( self::get_active_academic_year_end_date() ?: '' );
+            }
+            if ( ! $period_end || $period_end < $period_start ) {
+                $period_end = $period_start;
+            }
+
+            $start_dt = new \DateTime( $period_start );
+            $end_dt = new \DateTime( $period_end );
+            $days_span = max( 0, (int) $start_dt->diff( $end_dt )->days );
+            $outstanding_qirsh = (int) round( $outstanding * 100 );
+            $base_qirsh = intdiv( $outstanding_qirsh, $remaining_count );
+            $allocated_qirsh = 0;
+
+            foreach ( $kept_rows as $index => $line ) {
+                $date = clone $start_dt;
+                if ( $remaining_count > 1 && $days_span > 0 ) {
+                    $offset = (int) round( ( $days_span * $index ) / ( $remaining_count - 1 ) );
+                    if ( $offset > 0 ) {
+                        $date->modify( '+' . $offset . ' days' );
+                    }
+                }
+
+                $share_qirsh = ( $index === $remaining_count - 1 )
+                    ? $outstanding_qirsh - $allocated_qirsh
+                    : $base_qirsh;
+                $allocated_qirsh += $share_qirsh;
+
+                $paid = round( (float) ( $line->amount_paid ?? 0 ), 2 );
+                $new_due = round( $paid + ( $share_qirsh / 100 ), 2 );
+                $new_status = $share_qirsh <= 0
+                    ? 'paid'
+                    : ( $paid > 0 ? 'partially_paid' : self::initial_due_status( $date->format( 'Y-m-d' ) ) );
+
+                $updated = $wpdb->update(
+                    self::t( 'olama_invoice_installments' ),
+                    [
+                        'invoice_id'  => $invoice_id ?: null,
+                        'due_date'    => $date->format( 'Y-m-d' ),
+                        'amount_due'  => $new_due,
+                        'status'      => $new_status,
+                    ],
+                    [ 'id' => (int) $line->id ],
+                    [ '%d', '%s', '%f', '%s' ],
+                    [ '%d' ]
+                );
+
+                if ( false === $updated ) {
+                    return new \WP_Error( 'installment_update_failed', __( 'تعذر إعادة توزيع الأقساط غير المدفوعة.', 'olama-registration' ) );
+                }
+            }
+        }
+
+        $final_rows = array_merge( $settled, $kept_rows );
+        foreach ( $final_rows as $index => $line ) {
+            $wpdb->update(
+                self::t( 'olama_invoice_installments' ),
+                [ 'installment_no' => $index + 1 ],
+                [ 'id' => (int) $line->id ],
+                [ '%d' ],
+                [ '%d' ]
+            );
+        }
+
+        return true;
     }
 
     public static function validate_completion( int $agreement_id ): true|\WP_Error {
@@ -181,6 +410,20 @@ class Olama_Reg_Agreement_Invoice {
         if ( empty( $agreement->activity_type ) ) {
             $errors[] = __( 'يجب اختيار طبيعة العقد.', 'olama-registration' );
         }
+        $template = ! empty( $agreement->template_id )
+            ? Olama_Reg_Agreement_Templates::get( (int) $agreement->template_id )
+            : null;
+        if ( ! $template || ! (int) $template->is_active || trim( (string) $template->contract_content ) === '' ) {
+            $errors[] = __( 'يجب اختيار نموذج عقد مفعل يحتوي على نص العقد.', 'olama-registration' );
+        } elseif ( $template->template_key === 'kindergarten-registration' ) {
+            $participant_ids = array_values( array_filter( array_map(
+                'strval',
+                (array) ( $agreement->participant_ids_array ?? [] )
+            ) ) );
+            if ( count( array_unique( $participant_ids ) ) !== 1 ) {
+                $errors[] = __( 'نموذج تسجيل الروضة يتطلب طالباً واحداً فقط في كل عقد.', 'olama-registration' );
+            }
+        }
         if ( empty( $agreement->start_date ) ) {
             $errors[] = __( 'تاريخ بداية العقد مطلوب.', 'olama-registration' );
         }
@@ -197,14 +440,6 @@ class Olama_Reg_Agreement_Invoice {
         }
         if ( round( (float) $agreement->total_amount, 2 ) <= 0 ) {
             $errors[] = __( 'صافي العقد يجب أن يكون أكبر من صفر.', 'olama-registration' );
-        }
-
-        $clauses_count = (int) $wpdb->get_var( $wpdb->prepare(
-            "SELECT COUNT(*) FROM " . self::t( 'olama_agreement_clauses' ) . " WHERE agreement_id = %d AND TRIM(clause_text) != ''",
-            $agreement_id
-        ) );
-        if ( $clauses_count < 1 ) {
-            $errors[] = __( 'يجب اختيار بند أو شرط واحد على الأقل.', 'olama-registration' );
         }
 
         $schedule = self::get_due_schedule( $agreement_id );
@@ -234,6 +469,12 @@ class Olama_Reg_Agreement_Invoice {
         }
 
         $wpdb->query( 'START TRANSACTION' );
+        $snapshot = Olama_Reg_Contract_Renderer::snapshot( $agreement_id );
+        if ( is_wp_error( $snapshot ) ) {
+            $wpdb->query( 'ROLLBACK' );
+            return $snapshot;
+        }
+
         $invoice_id = self::generate_invoice( $agreement_id );
 
         if ( is_wp_error( $invoice_id ) ) {
@@ -285,9 +526,12 @@ class Olama_Reg_Agreement_Invoice {
         $items = [];
         foreach ( $fees as $fee ) {
             $items[] = [
-                'description' => $fee->label ?: __( 'رسوم عقد', 'olama-registration' ),
-                'quantity'    => 1,
-                'unit_price'  => (float) $fee->net_amount,
+                'agreement_fee_id' => (int) $fee->id,
+                'student_uid'      => (string) ( $fee->student_uid ?? '' ),
+                'fee_category'     => (string) $fee->fee_category,
+                'description'      => $fee->label ?: __( 'رسوم عقد', 'olama-registration' ),
+                'quantity'         => 1,
+                'unit_price'       => (float) $fee->net_amount,
             ];
         }
 
@@ -303,6 +547,7 @@ class Olama_Reg_Agreement_Invoice {
         }
 
         $invoice_data = [
+            'payer_type'           => $agreement->payer_type,
             'academic_year_id'    => $year_id,
             'issue_date'          => current_time( 'Y-m-d' ),
             'status'              => 'issued',
@@ -314,17 +559,13 @@ class Olama_Reg_Agreement_Invoice {
         ];
 
         if ( $agreement->payer_type === 'customer' ) {
-            $invoice_data['ext_customer_id'] = absint( $agreement->payer_id );
-            $customer = Olama_Reg_Customer::get( (int) $agreement->payer_id );
-            $invoice_data['family_uid'] = $customer ? $customer->customer_uid : 'CUST-' . str_pad( (string) $agreement->payer_id, 4, '0', STR_PAD_LEFT );
+            $invoice_data['customer_id'] = absint( $agreement->customer_id ?: $agreement->payer_id );
+            $invoice_data['ext_customer_id'] = $invoice_data['customer_id'];
             if ( $agreement->participant_type === 'child' ) {
                 $invoice_data['ext_child_id'] = absint( $agreement->participant_id );
             }
         } else {
-            $invoice_data['family_uid'] = (string) $agreement->payer_id;
-            if ( $agreement->participant_type === 'student' ) {
-                $invoice_data['student_uid'] = (string) $agreement->participant_id;
-            }
+            $invoice_data['family_uid'] = (string) ( $agreement->family_uid ?: $agreement->payer_id );
         }
 
         if ( $existing ) {

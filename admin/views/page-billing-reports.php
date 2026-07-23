@@ -123,6 +123,13 @@ $statement_rows    = $statement_report['rows'];
 $statement_summary = $statement_report['summary'];
 $statement_entity  = $statement_report['entity'];
 
+$family_balances_report = Olama_Reg_Billing_Reports::get_family_balances_report( [
+    'year_id' => $year_id,
+    'search'  => sanitize_text_field( $_GET['family_search'] ?? '' ),
+] );
+$family_balance_rows    = $family_balances_report['rows'];
+$family_balance_summary = $family_balances_report['summary'];
+
 $cheque_report = Olama_Reg_Billing_Reports::get_cheques_report( [
     'status' => sanitize_key( $_GET['cheque_status'] ?? '' ),
 ] );
@@ -193,6 +200,85 @@ if ( $action === 'export_cash_register_excel' ) {
             <?php endforeach; ?>
         </tbody>
     </table>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+if ( $action === 'print_family_balances' ) {
+    $school_settings = get_option( 'olama_school_settings', [] );
+    $school_name     = $school_settings['school_name_ar'] ?? get_bloginfo( 'name' );
+    ?>
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>كشف أرصدة العائلات</title>
+        <style>
+            body { font-family:Tajawal, Arial, sans-serif; color:#172033; margin:28px; direction:rtl; }
+            .no-print { margin-bottom:16px; text-align:left; }
+            button { background:#E8920A; color:#fff; border:0; border-radius:6px; padding:9px 18px; font-weight:700; cursor:pointer; }
+            h1 { margin:0 0 4px; font-size:24px; }
+            .meta { color:#64748b; margin-bottom:18px; }
+            .summary { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin:18px 0; }
+            .box { border:1px solid #E0C090; background:#FFF8E7; padding:10px; border-radius:6px; }
+            .box strong { display:block; font-size:17px; margin-top:4px; }
+            table { width:100%; border-collapse:collapse; font-size:12px; }
+            th, td { border:1px solid #d8dee9; padding:8px; text-align:right; vertical-align:middle; }
+            th { background:#1A1A2E; color:#fff; }
+            .amount { direction:ltr; text-align:left; font-weight:700; }
+            .debit { color:#c62828; }
+            .credit { color:#17823b; }
+            @media print {
+                .no-print { display:none; }
+                body { margin:0; }
+                @page { size:A4 landscape; margin:12mm; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="no-print"><button onclick="window.print();">طباعة</button></div>
+        <h1>كشف أرصدة العائلات</h1>
+        <div class="meta">
+            <?php echo esc_html( $school_name ); ?> |
+            العام الدراسي: <?php echo esc_html( $year_label ); ?> |
+            تاريخ الطباعة: <?php echo esc_html( wp_date( 'Y-m-d' ) ); ?>
+        </div>
+        <div class="summary">
+            <div class="box">عدد العائلات<strong><?php echo esc_html( (int) $family_balance_summary['family_count'] ); ?></strong></div>
+            <div class="box">مجموع الحركات المدينة<strong class="debit"><?php echo esc_html( $money( $family_balance_summary['total_debit'] ) ); ?></strong></div>
+            <div class="box">مجموع الحركات الدائنة<strong class="credit"><?php echo esc_html( $money( $family_balance_summary['total_credit'] ) ); ?></strong></div>
+            <div class="box">الرصيد<strong><?php echo esc_html( $money( $family_balance_summary['balance'] ) ); ?></strong></div>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>رقم العائلة</th>
+                    <th>اسم العائلة / ولي الأمر</th>
+                    <th>مجموع الحركات المدينة</th>
+                    <th>مجموع الحركات الدائنة</th>
+                    <th>الرصيد</th>
+                    <th>هاتف الأب</th>
+                    <th>هاتف الأم</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if ( empty( $family_balance_rows ) ) : ?>
+                    <tr><td colspan="7">لا توجد عائلات لديها عقود مطابقة.</td></tr>
+                <?php else : foreach ( $family_balance_rows as $row ) : ?>
+                    <tr>
+                        <td><strong><?php echo esc_html( $row->family_number ); ?></strong></td>
+                        <td><?php echo esc_html( $row->family_name ); ?></td>
+                        <td class="amount debit"><?php echo esc_html( $money( $row->total_debit ) ); ?></td>
+                        <td class="amount credit"><?php echo esc_html( $money( $row->total_credit ) ); ?></td>
+                        <td class="amount"><?php echo esc_html( $money( $row->balance ) ); ?></td>
+                        <td dir="ltr"><?php echo esc_html( $row->father_mobile ?: '—' ); ?></td>
+                        <td dir="ltr"><?php echo esc_html( $row->mother_mobile ?: '—' ); ?></td>
+                    </tr>
+                <?php endforeach; endif; ?>
+            </tbody>
+        </table>
     </body>
     </html>
     <?php
@@ -304,16 +390,8 @@ function olama_reg_render_cash_register_table( array $rows, array $method_labels
 }
 
 if ( ! function_exists( 'olama_reg_render_statement_type_label' ) ) {
-function olama_reg_render_statement_type_label( string $type ): string {
-    $labels = [
-        'invoice'          => olama_reg_statement_text( 'invoice' ),
-        'payment'          => olama_reg_statement_text( 'payment' ),
-        'payment_reversal' => olama_reg_statement_text( 'payment_reversal' ),
-        'credit'           => olama_reg_statement_text( 'credit' ),
-        'debit'            => olama_reg_statement_text( 'debit' ),
-    ];
-
-    return $labels[ $type ] ?? $type;
+function olama_reg_render_statement_type_label( string $type, string $subtype = '' ): string {
+    return Olama_Reg_Billing_Reports::format_statement_entry_type( $type, $subtype );
 }
 }
 
@@ -402,6 +480,10 @@ function olama_reg_statement_text( string $key ): string {
         <a class="<?php echo $active_tab === 'family_statement' ? 'active' : ''; ?>" href="<?php echo $build_url( [ 'page' => 'olama-registration-reports', 'report_tab' => 'family_statement', 'year_id' => $year_id ] ); ?>">
             <span class="dashicons dashicons-media-spreadsheet"></span>
             <?php echo esc_html( olama_reg_statement_text( 'tab' ) ); ?>
+        </a>
+        <a class="<?php echo $active_tab === 'family_balances' ? 'active' : ''; ?>" href="<?php echo $build_url( [ 'page' => 'olama-registration-reports', 'report_tab' => 'family_balances', 'year_id' => $year_id ] ); ?>">
+            <span class="dashicons dashicons-groups"></span>
+            كشف أرصدة العائلات
         </a>
         <a class="<?php echo $active_tab === 'cheques' ? 'active' : ''; ?>" href="<?php echo $build_url( [ 'page' => 'olama-registration-reports', 'report_tab' => 'cheques', 'year_id' => $year_id ] ); ?>">
             <span class="dashicons dashicons-tickets-alt"></span>
@@ -607,6 +689,129 @@ function olama_reg_statement_text( string $key ): string {
                 </table>
             </div>
         </div>
+    <?php elseif ( $active_tab === 'family_balances' ) : ?>
+        <div class="olama-reg-section">
+            <h3 class="olama-reg-section-title">
+                <span class="dashicons dashicons-filter"></span>
+                فلاتر كشف أرصدة العائلات
+            </h3>
+            <form method="get" class="olama-reg-grid olama-reg-grid--compact">
+                <input type="hidden" name="page" value="olama-registration-reports">
+                <input type="hidden" name="report_tab" value="family_balances">
+                <div class="olama-reg-field">
+                    <label>العام الدراسي</label>
+                    <select name="year_id">
+                        <option value="0">جميع الأعوام الدراسية</option>
+                        <?php foreach ( $years as $y ) : ?>
+                            <option value="<?php echo esc_attr( $y->id ); ?>" <?php selected( $year_id, $y->id ); ?>><?php echo esc_html( $y->year_name ); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="olama-reg-field">
+                    <label for="olama-family-balance-search">بحث عن عائلة</label>
+                    <input
+                        type="search"
+                        id="olama-family-balance-search"
+                        name="family_search"
+                        value="<?php echo esc_attr( $family_balances_report['filters']['search'] ); ?>"
+                        placeholder="رقم العائلة أو اسم ولي الأمر"
+                    >
+                </div>
+                <div class="olama-reg-field" style="justify-content:flex-end;">
+                    <button type="submit" class="olama-reg-btn olama-reg-btn--primary">
+                        <span class="dashicons dashicons-search"></span>
+                        عرض التقرير
+                    </button>
+                </div>
+                <div class="olama-reg-field" style="justify-content:flex-end;">
+                    <a
+                        class="olama-reg-btn olama-reg-btn--secondary"
+                        target="_blank"
+                        href="<?php echo $build_url( [
+                            'page'          => 'olama-registration-reports',
+                            'report_tab'    => 'family_balances',
+                            'action'        => 'print_family_balances',
+                            'year_id'       => $year_id,
+                            'family_search' => $family_balances_report['filters']['search'],
+                        ] ); ?>"
+                    >
+                        <span class="dashicons dashicons-printer"></span>
+                        طباعة التقرير
+                    </a>
+                </div>
+            </form>
+            <p style="margin:14px 0 0; color:#64748b;">
+                يعرض التقرير فقط العائلات التي لديها عقد مسجل وغير ملغى في العام الدراسي المحدد.
+            </p>
+        </div>
+
+        <div class="olama-reg-metrics-grid" style="grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));">
+            <div class="olama-reg-metric-card olama-reg-metric-card--primary">
+                <div class="olama-reg-metric-content">
+                    <div class="olama-reg-metric-title">عدد العائلات</div>
+                    <div class="olama-reg-metric-value"><?php echo esc_html( (int) $family_balance_summary['family_count'] ); ?></div>
+                </div>
+            </div>
+            <div class="olama-reg-metric-card olama-reg-metric-card--danger">
+                <div class="olama-reg-metric-content">
+                    <div class="olama-reg-metric-title">مجموع الحركات المدينة</div>
+                    <div class="olama-reg-metric-value"><?php echo esc_html( $money( $family_balance_summary['total_debit'] ) ); ?></div>
+                </div>
+            </div>
+            <div class="olama-reg-metric-card olama-reg-metric-card--success">
+                <div class="olama-reg-metric-content">
+                    <div class="olama-reg-metric-title">مجموع الحركات الدائنة</div>
+                    <div class="olama-reg-metric-value"><?php echo esc_html( $money( $family_balance_summary['total_credit'] ) ); ?></div>
+                </div>
+            </div>
+            <div class="olama-reg-metric-card olama-reg-metric-card--warning">
+                <div class="olama-reg-metric-content">
+                    <div class="olama-reg-metric-title">الرصيد</div>
+                    <div class="olama-reg-metric-value"><?php echo esc_html( $money( $family_balance_summary['balance'] ) ); ?></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="olama-reg-section">
+            <h3 class="olama-reg-section-title">
+                <span class="dashicons dashicons-groups"></span>
+                كشف أرصدة العائلات
+            </h3>
+            <div class="olama-reg-table-wrap">
+                <table class="olama-reg-fin-table">
+                    <thead>
+                        <tr>
+                            <th>رقم العائلة</th>
+                            <th>اسم العائلة / ولي الأمر</th>
+                            <th>مجموع الحركات المدينة</th>
+                            <th>مجموع الحركات الدائنة</th>
+                            <th>الرصيد</th>
+                            <th>هاتف الأب</th>
+                            <th>هاتف الأم</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ( empty( $family_balance_rows ) ) : ?>
+                            <tr>
+                                <td colspan="7" class="olama-reg-empty-state">
+                                    لا توجد عائلات لديها عقود مطابقة للفلاتر المحددة.
+                                </td>
+                            </tr>
+                        <?php else : foreach ( $family_balance_rows as $row ) : ?>
+                            <tr>
+                                <td><span class="olama-reg-uid-badge"><?php echo esc_html( $row->family_number ); ?></span></td>
+                                <td><strong><?php echo esc_html( $row->family_name ); ?></strong></td>
+                                <td style="color:#c62828;" dir="ltr"><strong><?php echo esc_html( $money( $row->total_debit ) ); ?></strong></td>
+                                <td class="olama-reg-text--success" dir="ltr"><strong><?php echo esc_html( $money( $row->total_credit ) ); ?></strong></td>
+                                <td dir="ltr"><strong><?php echo esc_html( $money( $row->balance ) ); ?></strong></td>
+                                <td dir="ltr"><?php echo esc_html( $row->father_mobile ?: '—' ); ?></td>
+                                <td dir="ltr"><?php echo esc_html( $row->mother_mobile ?: '—' ); ?></td>
+                            </tr>
+                        <?php endforeach; endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     <?php elseif ( $active_tab === 'family_statement' ) : ?>
         <div class="olama-reg-section">
             <h3 class="olama-reg-section-title">
@@ -618,14 +823,41 @@ function olama_reg_statement_text( string $key ): string {
                 <input type="hidden" name="report_tab" value="family_statement">
                 <div class="olama-reg-field">
                     <label><?php echo esc_html( olama_reg_statement_text( 'entity_type' ) ); ?></label>
-                    <select name="entity_type">
+                    <select name="entity_type" id="olama-reg-statement-entity-type">
                         <option value="family" <?php selected( $statement_report['filters']['entity_type'], 'family' ); ?>><?php echo esc_html( olama_reg_statement_text( 'family' ) ); ?></option>
                         <option value="external" <?php selected( $statement_report['filters']['entity_type'], 'external' ); ?>><?php echo esc_html( olama_reg_statement_text( 'external' ) ); ?></option>
                     </select>
                 </div>
-                <div class="olama-reg-field">
-                    <label><?php echo esc_html( olama_reg_statement_text( 'uid_label' ) ); ?></label>
-                    <input type="text" name="uid" value="<?php echo esc_attr( $statement_report['filters']['uid'] ); ?>" placeholder="<?php echo esc_attr( olama_reg_statement_text( 'uid_placeholder' ) ); ?>">
+                <div class="olama-reg-field" id="olama-reg-statement-family-field">
+                    <label for="olama-reg-statement-family"><?php esc_html_e( 'رقم العائلة', 'olama-registration' ); ?></label>
+                    <select
+                        name="uid"
+                        id="olama-reg-statement-family"
+                        style="width:100%;"
+                        data-placeholder="<?php esc_attr_e( 'ابحث برقم العائلة أو اسم ولي الأمر', 'olama-registration' ); ?>"
+                    >
+                        <?php if ( $statement_report['filters']['entity_type'] === 'family' && $statement_report['filters']['uid'] !== '' ) : ?>
+                            <option value="<?php echo esc_attr( $statement_report['filters']['uid'] ); ?>" selected>
+                                <?php
+                                echo esc_html(
+                                    $statement_report['filters']['uid']
+                                    . ( ! empty( $statement_entity['name'] ) ? ' — ' . $statement_entity['name'] : '' )
+                                );
+                                ?>
+                            </option>
+                        <?php endif; ?>
+                    </select>
+                </div>
+                <div class="olama-reg-field" id="olama-reg-statement-external-field" hidden>
+                    <label for="olama-reg-statement-external"><?php echo esc_html( olama_reg_statement_text( 'uid_label' ) ); ?></label>
+                    <input
+                        type="text"
+                        name="uid"
+                        id="olama-reg-statement-external"
+                        value="<?php echo $statement_report['filters']['entity_type'] === 'external' ? esc_attr( $statement_report['filters']['uid'] ) : ''; ?>"
+                        placeholder="<?php echo esc_attr( olama_reg_statement_text( 'uid_placeholder' ) ); ?>"
+                        disabled
+                    >
                 </div>
                 <div class="olama-reg-field">
                     <label><?php echo esc_html( olama_reg_statement_text( 'year' ) ); ?></label>
@@ -641,11 +873,10 @@ function olama_reg_statement_text( string $key ): string {
                 $show_student_dropdown = false;
                 $family_students = [];
                 if ( $statement_report['filters']['entity_type'] === 'family' && ! empty( $statement_report['filters']['uid'] ) ) {
-                    global $wpdb;
-                    $family_students = $wpdb->get_results( $wpdb->prepare(
-                        "SELECT student_uid, student_name FROM {$wpdb->prefix}olama_students WHERE family_id = %s AND is_active = 1",
-                        $statement_report['filters']['uid']
-                    ) ) ?: [];
+                    $family_students = Olama_Reg_Student::get_family_students(
+                        (string) $statement_report['filters']['uid'],
+                        $year_id
+                    );
                     if ( ! empty( $family_students ) ) {
                         $show_student_dropdown = true;
                     }
@@ -711,7 +942,7 @@ function olama_reg_statement_text( string $key ): string {
                         <?php else : foreach ( $statement_rows as $row ) : ?>
                             <tr>
                                 <td><?php echo esc_html( $row->movement_date ?: 'â€”' ); ?></td>
-                                <td><?php echo esc_html( olama_reg_render_statement_type_label( $row->entry_type ) ); ?></td>
+                                <td><?php echo esc_html( olama_reg_render_statement_type_label( $row->entry_type, (string) ( $row->entry_subtype ?? '' ) ) ); ?></td>
                                 <td><strong><?php echo esc_html( $row->reference_no ?: 'â€”' ); ?></strong></td>
                                 <td><?php echo esc_html( $row->details ?: 'â€”' ); ?></td>
                                 <td style="color:#c62828;" dir="ltr"><?php echo $row->debit_amount > 0 ? esc_html( $money( $row->debit_amount ) ) : 'â€”'; ?></td>

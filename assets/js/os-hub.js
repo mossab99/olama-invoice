@@ -520,15 +520,18 @@
         },
 
         showEmpty: function (query) {
+            var addAction = state.currentType === 'external'
+                ? '<div class="os-hub-notice__actions">' +
+                  '<button type="button" class="button" id="os-hub-add-new-btn">' +
+                  I18N.addNewCustomer + '</button></div>'
+                : '';
             $('#os-hub-results-list').html(
                 '<li class="os-hub-notice" style="padding:20px 16px;">' +
                 '<span class="dashicons dashicons-warning" aria-hidden="true"></span>' +
                 '<span class="os-hub-notice__title">' + I18N.noResults + '</span>' +
                 '<span class="os-hub-notice__body">' + escHtml(query) + '</span>' +
-                '<div class="os-hub-notice__actions">' +
-                '<button type="button" class="button" id="os-hub-add-new-btn">' +
-                (state.currentType === 'family' ? 'إضافة عائلة جديدة' : I18N.addNewCustomer) + '</button>' +
-                '</div></li>'
+                addAction +
+                '</li>'
             );
         },
 
@@ -1658,7 +1661,7 @@
                 $invSelect.empty().append('<option value="">جاري تحميل الفواتير...</option>');
                 $('#pay_invoice_id').val('');
                 $('#pay_invoice_bal_lbl').text('0.00 د.أ');
-                $('#pay_amount').val('').removeAttr('max');
+                $('#pay_amount').val('0.00').attr('min', '0.01').removeAttr('max');
 
                 $.post(AJAX_URL, {
                     action:           'olama_reg_get_family_billing',
@@ -1720,7 +1723,7 @@
                 $invSelect.empty().append('<option value="">جاري تحميل الفواتير...</option>');
                 $('#pay_invoice_id').val('');
                 $('#pay_invoice_bal_lbl').text('0.00 د.أ');
-                $('#pay_amount').val('').removeAttr('max');
+                $('#pay_amount').val('0.00').attr('min', '0.01').removeAttr('max');
 
                 $.post(AJAX_URL, {
                     action:           'olama_reg_get_family_billing',

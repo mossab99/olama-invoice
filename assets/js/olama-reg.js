@@ -4,6 +4,53 @@
 
     const R = olamaReg; // config injected by wp_localize_script
 
+    function cashAmount(value) {
+        const amount = parseFloat(value);
+        return Number.isFinite(amount) ? amount : 0;
+    }
+
+    function syncCashOpeningReconciliation($form) {
+        const reference = cashAmount($form.find('[name="account_id"] option:selected').data('reference-balance'));
+        const rawActual = $form.find('[name="opening_balance"]').val();
+        const hasActual = rawActual !== '';
+        const difference = cashAmount(rawActual) - reference;
+        const hasDifference = hasActual && Math.abs(difference) >= 0.01;
+        const $variance = $form.find('.os-cash-opening-variance');
+        const $acknowledgement = $variance.find('[name="opening_variance_acknowledged"]');
+
+        $form.find('.os-cash-reference-balance').text(reference.toFixed(2));
+        $form.find('.os-cash-opening-variance-value').text(difference.toFixed(2));
+        $variance.prop('hidden', !hasDifference);
+        $acknowledgement.prop('required', hasDifference);
+        if (!hasDifference) {
+            $acknowledgement.prop('checked', false);
+        }
+        $form.find('[name="notes"]').prop('required', hasDifference);
+    }
+
+    $(document).on('input change', '.os-cash-session-open-form [name="account_id"], .os-cash-session-open-form [name="opening_balance"]', function () {
+        syncCashOpeningReconciliation($(this).closest('form'));
+    });
+
+    $(document).on('input', '.os-cash-session-close-form [name="actual_closing_balance"]', function () {
+        const $form = $(this).closest('form');
+        const rawActual = $(this).val();
+        const difference = cashAmount(rawActual) - cashAmount($form.data('expected'));
+        const hasDifference = rawActual !== '' && Math.abs(difference) >= 0.01;
+
+        $form.find('.os-cash-closing-variance')
+            .prop('hidden', rawActual === '')
+            .find('strong')
+            .text(difference.toFixed(2));
+        $form.find('[name="notes"]').prop('required', hasDifference);
+    });
+
+    $(function () {
+        $('.os-cash-session-open-form').each(function () {
+            syncCashOpeningReconciliation($(this));
+        });
+    });
+
     // ── Utilities ────────────────────────────────────────────────────────────
 
     function showNotice(msg, isError = false) {
@@ -681,6 +728,71 @@
     }
     window.olamaRegSyncAgreementFeeTemplateOptions = syncAgreementFeeTemplateOptions;
 
+    function initStatementFamilySearch() {
+        const $entityType = $('#olama-reg-statement-entity-type');
+        const $familyField = $('#olama-reg-statement-family-field');
+        const $family = $('#olama-reg-statement-family');
+        const $externalField = $('#olama-reg-statement-external-field');
+        const $external = $('#olama-reg-statement-external');
+
+        if (!$entityType.length || !$family.length) return;
+
+        const syncEntityFields = function () {
+            const isFamily = $entityType.val() === 'family';
+            $familyField.prop('hidden', !isFamily);
+            $family.prop('disabled', !isFamily);
+            $externalField.prop('hidden', isFamily);
+            $external.prop('disabled', isFamily);
+        };
+
+        if (typeof $.fn.select2 !== 'undefined' && !$family.hasClass('select2-hidden-accessible')) {
+            $family.select2({
+                dir: 'rtl',
+                width: '100%',
+                allowClear: true,
+                placeholder: $family.data('placeholder'),
+                minimumInputLength: 1,
+                ajax: {
+                    url: R.ajaxurl,
+                    dataType: 'json',
+                    delay: 250,
+                    type: 'POST',
+                    data: function (params) {
+                        return {
+                            action: 'olama_reg_search',
+                            nonce: R.nonce,
+                            q: params.term || ''
+                        };
+                    },
+                    processResults: function (response) {
+                        const families = response?.success && response.data?.families
+                            ? response.data.families
+                            : [];
+
+                        return {
+                            results: families.map(function (family) {
+                                const familyNumber = String(family.family_uid || '').replace(/^ORA-FAM-/, '');
+                                const name = [family.father_first_name, family.father_family_name]
+                                    .filter(Boolean)
+                                    .join(' ')
+                                    .trim();
+
+                                return {
+                                    id: familyNumber,
+                                    text: familyNumber + (name ? ' — ' + name : '')
+                                };
+                            })
+                        };
+                    },
+                    cache: true
+                }
+            });
+        }
+
+        $entityType.on('change', syncEntityFields);
+        syncEntityFields();
+    }
+
     $(document).on('change', '#inv_service_type', syncInvoiceTemplateOptions);
     $(document).on('change', '#cp_service_type', syncCustomPaymentTemplateOptions);
     $(document).on('change', '#os-agr-activity, #os-agr-activity-modal', function () {
@@ -691,6 +803,7 @@
         syncInvoiceTemplateOptions();
         syncCustomPaymentTemplateOptions();
         syncAgreementFeeTemplateOptions();
+        initStatementFamilySearch();
     });
 
     $(document).on('click', '#olama-reg-open-invoice-modal-btn', function () {
@@ -1299,8 +1412,8 @@
                             <h3 class="olama-reg-section-title">تفاصيل الدفعة المالية</h3>
                             <div class="olama-reg-grid">
                                 <div class="olama-reg-field olama-reg-field--required">
-                                    <label for="pay_amount">قيمة الدفعة المقبوضة (د.أ)</label>
-                                    <input type="number" step="0.01" id="pay_amount" name="amount" required>
+                                    <label for="pay_amount">أدخل قيمة الدفعة المقبوضة (د.أ)</label>
+                                    <input type="number" step="0.01" min="0.01" value="0.00" placeholder="0.00" id="pay_amount" name="amount" required>
                                 </div>
                                 <div class="olama-reg-field olama-reg-field--required">
                                     <label for="pay_method">طريقة الدفع</label>
@@ -1353,7 +1466,10 @@
         $('#pay_family_uid').val(family);
         $('#pay_invoice_no_lbl').text(no);
         $('#pay_invoice_bal_lbl').text(bal.toFixed(2) + ' د.أ');
-        $('#pay_amount').val(bal.toFixed(2)).attr('max', bal.toFixed(2));
+        $('#pay_amount').val('0.00').attr({
+            min: '0.01',
+            max: bal.toFixed(2)
+        });
 
         const today = new Date().toISOString().split('T')[0];
         $('#pay_date').val(today);
@@ -1370,7 +1486,7 @@
         $('#pay_invoice_id').val('');
         $('#pay_family_uid').val('');
         $('#pay_invoice_bal_lbl').text('0.00 د.أ');
-        $('#pay_amount').val('').removeAttr('max');
+        $('#pay_amount').val('0.00').attr('min', '0.01').removeAttr('max');
 
         if (typeof $.fn.select2 !== 'undefined' && !$('#pay_search_family').hasClass('select2-hidden-accessible')) {
             $('#pay_search_family').select2({
@@ -1409,7 +1525,7 @@
         $invSelect.empty().append('<option value="">جاري تحميل الفواتير...</option>');
         $('#pay_invoice_id').val('');
         $('#pay_invoice_bal_lbl').text('0.00 د.أ');
-        $('#pay_amount').val('').removeAttr('max');
+        $('#pay_amount').val('0.00').attr('min', '0.01').removeAttr('max');
 
         if (!familyUid) {
             $invSelect.empty().append('<option value="">-- اختر الفاتورة --</option>');
@@ -1433,7 +1549,12 @@
         $('#pay_invoice_id').val(id);
         const bal = parseFloat($(this).find(':selected').data('bal')) || 0;
         $('#pay_invoice_bal_lbl').text(bal.toFixed(2) + ' د.أ');
-        $('#pay_amount').val(bal.toFixed(2)).attr('max', bal.toFixed(2));
+        const $amount = $('#pay_amount').val('0.00').attr('min', '0.01');
+        if (id && bal > 0) {
+            $amount.attr('max', bal.toFixed(2));
+        } else {
+            $amount.removeAttr('max');
+        }
     });
 
     $(document).on('click', '.olama-reg-pay-modal-close', function () {
@@ -2970,7 +3091,7 @@
         $('#os-form-agreement-header').trigger('submit');
     });
 
-    $(document).on('input change', '#os-form-agreement-header :input, #os-agr-clauses-list .os-agr-clause-text', function () {
+    $(document).on('input change', '#os-form-agreement-header :input', function () {
         $('#os-agreement-app').attr('data-header-saved', '0').data('header-saved', '0');
         if (typeof syncAgreementWorkspaceActions === 'function') {
             syncAgreementWorkspaceActions();
@@ -2991,16 +3112,6 @@
                 formData[item.name] = item.value;
             }
         });
-
-        // Collect clauses
-        const clauses = [];
-        $('#os-agr-clauses-list li').each(function () {
-            const text = $(this).find('.os-agr-clause-text').val().trim();
-            if (text) {
-                clauses.push(text);
-            }
-        });
-        formData.clauses = clauses;
 
         ajax('olama_reg_agr_save_header', formData, $btn)
             .done(res => {
@@ -3039,7 +3150,6 @@
                         $agreementForm.find('input[name="id"]').val(res.data.id);
                         jQuery('#os-agreement-app').attr('data-id', res.data.id);
                         jQuery('#os-agr-fees-table').data('agr-id', res.data.id).attr('data-agr-id', res.data.id);
-                        jQuery('#os-agr-add-clause').data('agr-id', res.data.id).attr('data-agr-id', res.data.id);
                         
                         if (isHubEmbedded) {
                             jQuery('.os-nav-tabs .nav-tab[href="#tab-fees"]').removeClass('os-disabled');
@@ -3318,6 +3428,9 @@
             window.payerChildren.forEach(function (child) {
                 $childSelect.append(new Option(child.text, child.id));
             });
+            if (window.payerChildren.length === 1) {
+                $childSelect.val(String(window.payerChildren[0].id));
+            }
         }
 
         $('#os-agr-fees-table tbody').append($template);
@@ -3339,20 +3452,46 @@
         initDatepickers($('#os-agr-fees-table tbody tr').last());
     });
 
-    // Auto-fill label and amount when a fee template is selected
+    function renderAgreementFeeBreakdown($tr, rawBreakdown) {
+        const $container = $tr.find('.os-agr-fee-breakdown').empty();
+        let items = rawBreakdown;
+
+        if (typeof items === 'string') {
+            try {
+                items = JSON.parse(items);
+            } catch (error) {
+                items = [];
+            }
+        }
+
+        if (!Array.isArray(items)) return;
+
+        items.forEach(function (item) {
+            const amount = parseFloat(item.amount) || 0;
+            const $line = $('<span>');
+            $('<span>').text(item.description || '').appendTo($line);
+            $('<b>').text(amount.toFixed(3)).appendTo($line);
+            $container.append($line);
+        });
+    }
+
+    // A fee template is one agreement line; its items are a read-only breakdown.
     $(document).on('change', '.os-agr-fee-template-select', function () {
         const $option = $(this).find('option:selected');
         const $tr = $(this).closest('tr');
         const name = $option.data('name');
         const amount = $option.data('amount');
 
-        if (name && $tr.find('[name="label"]').val() === '') {
+        if (name) {
             $tr.find('[name="label"]').val(name);
+            $tr.find('.os-agr-fee-template-name').text(name);
         }
 
         if (amount !== undefined) {
             $tr.find('[name="amount"]').val(amount).trigger('input');
         }
+
+        renderAgreementFeeBreakdown($tr, $option.attr('data-breakdown') || '[]');
     });
 
     $(function () {
@@ -3535,25 +3674,6 @@
 
     // ── Agreements: Clauses ──────────────────────────────────────────────────
 
-    if (typeof $.fn.sortable !== 'undefined' && $('#os-agr-clauses-list').length) {
-        $('#os-agr-clauses-list').sortable({
-            update: function () {
-                const orderedIds = [];
-                let hasTemp = false;
-                $(this).find('li').each(function () {
-                    const cid = String($(this).attr('data-clause-id') || '');
-                    if (cid.startsWith('temp-')) {
-                        hasTemp = true;
-                    }
-                    orderedIds.push($(this).data('clause-id'));
-                });
-                if (!hasTemp) {
-                    ajax('olama_reg_agr_reorder_clauses', { ordered_ids: orderedIds });
-                }
-            }
-        });
-    }
-
     function collectAgreementDueLines() {
         const lines = [];
         $('#os-agr-due-table tbody tr').each(function () {
@@ -3731,11 +3851,9 @@
             showNotice('مجموع الاستحقاقات لا يساوي صافي العقد. يرجى تعديل توزيع الاستحقاق قبل الحفظ.', true);
             return;
         }
-        const hasClause = $('#os-agr-clauses-list .os-agr-clause-text').filter(function () {
-            return $.trim($(this).val()).length > 0;
-        }).length > 0;
-        if (!hasClause) {
-            showNotice('لا يمكن إكمال العقد قبل إضافة بند أو شرط واحد على الأقل.', true);
+        const templateId = parseInt($('#os-agr-contract-template').val(), 10) || 0;
+        if (!templateId) {
+            showNotice('يجب اختيار نموذج العقد وحفظ البيانات قبل إكمال العقد.', true);
             return;
         }
         ajax('olama_reg_agr_complete', {

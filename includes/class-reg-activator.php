@@ -48,7 +48,113 @@ class Olama_Reg_Activator {
         self::upgrade_installments_table( $wpdb );
         self::upgrade_allocations_table( $wpdb );
         self::upgrade_agreement_fees_table( $wpdb );
+        self::upgrade_core_identity_schema( $wpdb );
+        self::upgrade_contract_template_schema( $wpdb );
+        self::seed_default_registration_template( $wpdb );
         self::backfill_agreement_participants( $wpdb );
+    }
+
+    /**
+     * Tables owned exclusively by Olama Invoice.
+     *
+     * Core, school, WordPress, family, and student source tables are
+     * intentionally excluded from this list.
+     */
+    public static function invoice_owned_tables(): array {
+        return [
+            'olama_agreement_amendment_lines',
+            'olama_agreement_amendments',
+            'olama_agreement_participants',
+            'olama_agreement_clauses',
+            'olama_agreement_fees',
+            'olama_agreements',
+            'olama_agreement_template_clauses',
+            'olama_agreement_template_fees',
+            'olama_agreement_templates',
+            'olama_agreement_clause_bank',
+            'olama_payment_allocations',
+            'olama_invoice_adjustments',
+            'olama_invoice_installments',
+            'olama_invoice_items',
+            'olama_bank_transfer_details',
+            'olama_epayment_details',
+            'olama_cheques',
+            'olama_payments',
+            'olama_invoices',
+            'olama_settlement_receipts',
+            'olama_billing_audit',
+            'olama_cash_bank_movements',
+            'olama_account_transfers',
+            'olama_cash_sessions',
+            'olama_financial_accounts',
+            'olama_family_financial_snapshots',
+            'olama_reg_financial',
+            'olama_fee_templates',
+            'olama_customer_children',
+            'olama_customers',
+        ];
+    }
+
+    public static function invoice_owned_options(): array {
+        return [
+            'olama_reg_custom_services',
+            'olama_reg_agreement_natures',
+            'olama_reg_agreement_nature_installments',
+            'olama_require_cash_session',
+            'olama_bank_transfer_immediate_posting',
+            'olama_epayment_immediate_posting',
+            'olama_cheque_financial_effect',
+        ];
+    }
+
+    /**
+     * Remove demo data without touching Olama Core, school, or WordPress data.
+     *
+     * This is intentionally callable only with an explicit confirmation token.
+     *
+     * @return array<string,int>|\WP_Error
+     */
+    public static function reset_demo_data( string $confirmation ): array|\WP_Error {
+        global $wpdb;
+
+        if ( $confirmation !== 'RESET-OLAMA-INVOICE-DEMO-DATA' ) {
+            return new \WP_Error( 'confirmation_required', 'The Invoice demo reset confirmation token is invalid.' );
+        }
+
+        $deleted = [];
+        $wpdb->query( 'START TRANSACTION' );
+
+        foreach ( self::invoice_owned_tables() as $suffix ) {
+            $table = $wpdb->prefix . $suffix;
+            $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) );
+            if ( ! $exists ) {
+                continue;
+            }
+
+            $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$table}`" );
+            $result = $wpdb->query( "DELETE FROM `{$table}`" );
+            if ( $result === false ) {
+                $wpdb->query( 'ROLLBACK' );
+                return new \WP_Error( 'reset_failed', "Could not clear {$table}: {$wpdb->last_error}" );
+            }
+            $deleted[ $suffix ] = $count;
+        }
+
+        $wpdb->query( 'COMMIT' );
+
+        foreach ( array_keys( $deleted ) as $suffix ) {
+            $table = $wpdb->prefix . $suffix;
+            $wpdb->query( "ALTER TABLE `{$table}` AUTO_INCREMENT = 1" );
+        }
+
+        foreach ( self::invoice_owned_options() as $option ) {
+            delete_option( $option );
+        }
+
+        // Recreate required default accounts and verify the production schema.
+        self::upgrade();
+
+        return $deleted;
     }
 
     public static function financial_capabilities(): array {
@@ -373,6 +479,8 @@ class Olama_Reg_Activator {
             opened_at datetime DEFAULT NULL,
             closed_at datetime DEFAULT NULL,
             opening_balance decimal(12,2) NOT NULL DEFAULT 0.00,
+            opening_reference_balance decimal(12,2) DEFAULT NULL,
+            opening_difference_amount decimal(12,2) DEFAULT NULL,
             cash_in_total decimal(12,2) NOT NULL DEFAULT 0.00,
             cash_out_total decimal(12,2) NOT NULL DEFAULT 0.00,
             expected_closing_balance decimal(12,2) NOT NULL DEFAULT 0.00,
@@ -381,6 +489,9 @@ class Olama_Reg_Activator {
             status varchar(30) NOT NULL DEFAULT 'open',
             reviewed_by bigint(20) UNSIGNED DEFAULT NULL,
             reviewed_at datetime DEFAULT NULL,
+            opening_notes text DEFAULT NULL,
+            closing_notes text DEFAULT NULL,
+            review_notes text DEFAULT NULL,
             notes text DEFAULT NULL,
             created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
             updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -785,13 +896,19 @@ class Olama_Reg_Activator {
         // 4. Agreement Templates
         $sql_templates = "CREATE TABLE {$wpdb->prefix}olama_agreement_templates (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            template_key VARCHAR(100) DEFAULT NULL,
             activity_type VARCHAR(60) NOT NULL,
             name VARCHAR(255) NOT NULL,
             description TEXT DEFAULT NULL,
+            contract_content LONGTEXT DEFAULT NULL,
+            version INT UNSIGNED NOT NULL DEFAULT 1,
+            is_default TINYINT(1) NOT NULL DEFAULT 0,
             is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at DATETIME NOT NULL,
+            updated_at DATETIME DEFAULT NULL,
             PRIMARY KEY (id),
-            KEY activity_type (activity_type)
+            KEY activity_type (activity_type),
+            UNIQUE KEY template_key (template_key)
         ) {$charset};";
 
         // 5. Template Fees
@@ -1164,6 +1281,175 @@ class Olama_Reg_Activator {
         }
         if ( ! in_array( 'cancellation_amendment_id', (array) $existing, true ) ) {
             $wpdb->query( "ALTER TABLE {$table} ADD COLUMN `cancellation_amendment_id` bigint(20) UNSIGNED DEFAULT NULL AFTER `cancellation_reason`" );
+        }
+    }
+
+    /**
+     * Production identity contract.
+     *
+     * Canonical Core UIDs are persisted for joins. Oracle IDs are stored in
+     * separate columns for integrations and human-facing documents.
+     */
+    private static function upgrade_core_identity_schema( $wpdb ): void {
+        $agreements = $wpdb->prefix . 'olama_agreements';
+        self::modify_column( $wpdb, $agreements, 'payer_id', 'VARCHAR(100) NOT NULL' );
+        self::ensure_column( $wpdb, $agreements, 'payer_ref', "VARCHAR(100) DEFAULT NULL AFTER `payer_type`" );
+        self::ensure_column( $wpdb, $agreements, 'family_uid', "VARCHAR(100) DEFAULT NULL AFTER `payer_ref`" );
+        self::ensure_column( $wpdb, $agreements, 'oracle_family_id', "VARCHAR(100) DEFAULT NULL AFTER `family_uid`" );
+        self::ensure_column( $wpdb, $agreements, 'customer_id', "BIGINT UNSIGNED DEFAULT NULL AFTER `oracle_family_id`" );
+        self::ensure_column( $wpdb, $agreements, 'study_year', "VARCHAR(20) DEFAULT NULL AFTER `academic_year_id`" );
+        self::ensure_index( $wpdb, $agreements, 'family_year', [ 'family_uid', 'academic_year_id' ] );
+
+        $participants = $wpdb->prefix . 'olama_agreement_participants';
+        self::modify_column( $wpdb, $participants, 'family_uid', 'VARCHAR(100) NOT NULL' );
+        self::modify_column( $wpdb, $participants, 'participant_ref', 'VARCHAR(100) NOT NULL' );
+        self::modify_column( $wpdb, $participants, 'student_uid', 'VARCHAR(100) DEFAULT NULL' );
+        self::ensure_column( $wpdb, $participants, 'oracle_family_id', "VARCHAR(100) DEFAULT NULL AFTER `family_uid`" );
+        self::ensure_column( $wpdb, $participants, 'oracle_student_id', "VARCHAR(100) DEFAULT NULL AFTER `student_uid`" );
+        self::ensure_column( $wpdb, $participants, 'participant_name_snapshot', "VARCHAR(255) DEFAULT NULL AFTER `oracle_student_id`" );
+
+        $fees = $wpdb->prefix . 'olama_agreement_fees';
+        self::ensure_column( $wpdb, $fees, 'participant_ref', "VARCHAR(100) DEFAULT NULL AFTER `agreement_id`" );
+        self::ensure_column( $wpdb, $fees, 'student_uid', "VARCHAR(100) DEFAULT NULL AFTER `participant_ref`" );
+        self::ensure_column( $wpdb, $fees, 'oracle_student_id', "VARCHAR(100) DEFAULT NULL AFTER `student_uid`" );
+        self::ensure_index( $wpdb, $fees, 'student_uid', [ 'student_uid' ] );
+
+        $invoices = $wpdb->prefix . 'olama_invoices';
+        self::modify_column( $wpdb, $invoices, 'family_uid', 'VARCHAR(100) DEFAULT NULL' );
+        self::modify_column( $wpdb, $invoices, 'student_uid', 'VARCHAR(100) DEFAULT NULL' );
+        self::ensure_column( $wpdb, $invoices, 'payer_type', "VARCHAR(20) NOT NULL DEFAULT 'family' AFTER `invoice_number`" );
+        self::ensure_column( $wpdb, $invoices, 'oracle_family_id', "VARCHAR(100) DEFAULT NULL AFTER `family_uid`" );
+        self::ensure_column( $wpdb, $invoices, 'oracle_student_id', "VARCHAR(100) DEFAULT NULL AFTER `student_uid`" );
+        self::ensure_column( $wpdb, $invoices, 'customer_id', "BIGINT UNSIGNED DEFAULT NULL AFTER `oracle_student_id`" );
+        self::ensure_column( $wpdb, $invoices, 'study_year', "VARCHAR(20) DEFAULT NULL AFTER `academic_year_id`" );
+        self::ensure_column( $wpdb, $invoices, 'payer_name_snapshot', "VARCHAR(255) DEFAULT NULL AFTER `study_year`" );
+        self::ensure_column( $wpdb, $invoices, 'student_name_snapshot', "VARCHAR(255) DEFAULT NULL AFTER `payer_name_snapshot`" );
+        self::ensure_column( $wpdb, $invoices, 'grade_name_snapshot', "VARCHAR(190) DEFAULT NULL AFTER `student_name_snapshot`" );
+        self::ensure_index( $wpdb, $invoices, 'payer_scope', [ 'payer_type', 'family_uid', 'customer_id' ] );
+        self::ensure_index( $wpdb, $invoices, 'student_uid', [ 'student_uid' ] );
+
+        $items = $wpdb->prefix . 'olama_invoice_items';
+        self::ensure_column( $wpdb, $items, 'agreement_fee_id', "BIGINT UNSIGNED DEFAULT NULL AFTER `invoice_id`" );
+        self::ensure_column( $wpdb, $items, 'student_uid', "VARCHAR(100) DEFAULT NULL AFTER `agreement_fee_id`" );
+        self::ensure_column( $wpdb, $items, 'oracle_student_id', "VARCHAR(100) DEFAULT NULL AFTER `student_uid`" );
+        self::ensure_column( $wpdb, $items, 'student_name_snapshot', "VARCHAR(255) DEFAULT NULL AFTER `oracle_student_id`" );
+        self::ensure_column( $wpdb, $items, 'fee_category', "VARCHAR(100) DEFAULT NULL AFTER `student_name_snapshot`" );
+        self::ensure_index( $wpdb, $items, 'student_uid', [ 'student_uid' ] );
+
+        $payments = $wpdb->prefix . 'olama_payments';
+        self::modify_column( $wpdb, $payments, 'family_uid', 'VARCHAR(100) DEFAULT NULL' );
+        self::ensure_column( $wpdb, $payments, 'payer_type', "VARCHAR(20) NOT NULL DEFAULT 'family' AFTER `payment_no`" );
+        self::ensure_column( $wpdb, $payments, 'oracle_family_id', "VARCHAR(100) DEFAULT NULL AFTER `family_uid`" );
+        self::ensure_column( $wpdb, $payments, 'customer_id', "BIGINT UNSIGNED DEFAULT NULL AFTER `oracle_family_id`" );
+        self::ensure_column( $wpdb, $payments, 'oracle_sync_status', "VARCHAR(30) NOT NULL DEFAULT 'not_required' AFTER `status`" );
+        self::ensure_column( $wpdb, $payments, 'oracle_receipt_id', "VARCHAR(100) DEFAULT NULL AFTER `external_reference`" );
+        self::ensure_index( $wpdb, $payments, 'oracle_sync_status', [ 'oracle_sync_status' ] );
+        self::ensure_index( $wpdb, $payments, 'oracle_receipt_id', [ 'oracle_receipt_id' ] );
+
+        $allocations = $wpdb->prefix . 'olama_payment_allocations';
+        self::modify_column( $wpdb, $allocations, 'student_uid', 'VARCHAR(100) DEFAULT NULL' );
+
+        $settlements = $wpdb->prefix . 'olama_settlement_receipts';
+        self::ensure_column( $wpdb, $settlements, 'family_uid', "VARCHAR(100) DEFAULT NULL AFTER `receipt_number`" );
+        self::ensure_column( $wpdb, $settlements, 'oracle_family_id', "VARCHAR(100) DEFAULT NULL AFTER `family_uid`" );
+        self::ensure_column( $wpdb, $settlements, 'student_uid', "VARCHAR(100) DEFAULT NULL AFTER `oracle_family_id`" );
+        self::ensure_column( $wpdb, $settlements, 'oracle_student_id', "VARCHAR(100) DEFAULT NULL AFTER `student_uid`" );
+        self::ensure_index( $wpdb, $settlements, 'family_uid', [ 'family_uid' ] );
+
+        $snapshots = $wpdb->prefix . 'olama_family_financial_snapshots';
+        self::modify_column( $wpdb, $snapshots, 'family_uid', 'VARCHAR(100) NOT NULL' );
+        self::ensure_column( $wpdb, $snapshots, 'oracle_family_id', "VARCHAR(100) DEFAULT NULL AFTER `family_uid`" );
+        self::ensure_column( $wpdb, $snapshots, 'study_year', "VARCHAR(20) DEFAULT NULL AFTER `academic_year_id`" );
+        self::ensure_column( $wpdb, $snapshots, 'oracle_balance', "DECIMAL(15,3) DEFAULT NULL AFTER `current_balance`" );
+        self::ensure_column( $wpdb, $snapshots, 'reconciliation_difference', "DECIMAL(15,3) DEFAULT NULL AFTER `oracle_balance`" );
+    }
+
+    private static function upgrade_contract_template_schema( $wpdb ): void {
+        $templates = $wpdb->prefix . 'olama_agreement_templates';
+        self::ensure_column( $wpdb, $templates, 'template_key', "VARCHAR(100) DEFAULT NULL AFTER `id`" );
+        self::ensure_column( $wpdb, $templates, 'contract_content', "LONGTEXT DEFAULT NULL AFTER `description`" );
+        self::ensure_column( $wpdb, $templates, 'version', "INT UNSIGNED NOT NULL DEFAULT 1 AFTER `contract_content`" );
+        self::ensure_column( $wpdb, $templates, 'is_default', "TINYINT(1) NOT NULL DEFAULT 0 AFTER `version`" );
+        self::ensure_column( $wpdb, $templates, 'updated_at', "DATETIME DEFAULT NULL AFTER `created_at`" );
+        self::ensure_index( $wpdb, $templates, 'template_key', [ 'template_key' ] );
+
+        $agreements = $wpdb->prefix . 'olama_agreements';
+        self::ensure_column( $wpdb, $agreements, 'template_version', "INT UNSIGNED DEFAULT NULL AFTER `template_id`" );
+        self::ensure_column( $wpdb, $agreements, 'contract_snapshot', "LONGTEXT DEFAULT NULL AFTER `notes`" );
+        self::ensure_column( $wpdb, $agreements, 'contract_variables_snapshot', "LONGTEXT DEFAULT NULL AFTER `contract_snapshot`" );
+        self::ensure_column( $wpdb, $agreements, 'contract_hash', "CHAR(64) DEFAULT NULL AFTER `contract_variables_snapshot`" );
+        self::ensure_column( $wpdb, $agreements, 'contract_generated_at', "DATETIME DEFAULT NULL AFTER `contract_hash`" );
+        self::ensure_index( $wpdb, $agreements, 'template_id', [ 'template_id' ] );
+        self::ensure_index( $wpdb, $agreements, 'contract_hash', [ 'contract_hash' ] );
+    }
+
+    private static function seed_default_registration_template( $wpdb ): void {
+        if ( ! class_exists( 'Olama_Reg_Contract_Renderer' ) && defined( 'OLAMA_REG_PATH' ) ) {
+            require_once OLAMA_REG_PATH . 'includes/class-reg-contract-renderer.php';
+        }
+        if ( ! class_exists( 'Olama_Reg_Contract_Renderer' ) ) {
+            return;
+        }
+
+        $table = $wpdb->prefix . 'olama_agreement_templates';
+        $existing = $wpdb->get_row( $wpdb->prepare(
+            "SELECT id, contract_content FROM {$table} WHERE template_key = %s LIMIT 1",
+            'kindergarten-registration'
+        ) );
+
+        if ( $existing ) {
+            if ( trim( (string) $existing->contract_content ) === '' ) {
+                $wpdb->update(
+                    $table,
+                    [
+                        'contract_content' => Olama_Reg_Contract_Renderer::default_registration_content(),
+                        'is_default'       => 1,
+                        'is_active'        => 1,
+                        'updated_at'       => current_time( 'mysql' ),
+                    ],
+                    [ 'id' => (int) $existing->id ]
+                );
+            }
+            return;
+        }
+
+        $wpdb->insert(
+            $table,
+            [
+                'template_key'    => 'kindergarten-registration',
+                'activity_type'   => 'kindergarten',
+                'name'            => 'عقد تسجيل طالب في قسم الروضة',
+                'description'     => 'النموذج الافتراضي لتسجيل طلاب الروضة، ويتضمن البيانات والرسوم والدفعات والنقل المشروط.',
+                'contract_content'=> Olama_Reg_Contract_Renderer::default_registration_content(),
+                'version'         => 1,
+                'is_default'      => 1,
+                'is_active'       => 1,
+                'created_at'      => current_time( 'mysql' ),
+                'updated_at'      => current_time( 'mysql' ),
+            ],
+            [ '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%d', '%s', '%s' ]
+        );
+    }
+
+    private static function ensure_column( $wpdb, string $table, string $column, string $definition ): void {
+        $columns = $wpdb->get_col( "DESCRIBE {$table}", 0 );
+        if ( ! in_array( $column, (array) $columns, true ) ) {
+            $wpdb->query( "ALTER TABLE {$table} ADD COLUMN `{$column}` {$definition}" );
+        }
+    }
+
+    private static function modify_column( $wpdb, string $table, string $column, string $definition ): void {
+        $columns = $wpdb->get_col( "DESCRIBE {$table}", 0 );
+        if ( in_array( $column, (array) $columns, true ) ) {
+            $wpdb->query( "ALTER TABLE {$table} MODIFY COLUMN `{$column}` {$definition}" );
+        }
+    }
+
+    private static function ensure_index( $wpdb, string $table, string $index, array $columns ): void {
+        $indexes = $wpdb->get_col( "SHOW INDEX FROM {$table} WHERE Key_name = '" . esc_sql( $index ) . "'", 2 );
+        if ( empty( $indexes ) ) {
+            $quoted = implode( ',', array_map( static fn( string $column ): string => "`{$column}`", $columns ) );
+            $wpdb->query( "ALTER TABLE {$table} ADD KEY `{$index}` ({$quoted})" );
         }
     }
 }

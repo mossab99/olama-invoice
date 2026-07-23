@@ -284,13 +284,13 @@ class Olama_Reg_Billing_Reports {
                 i.invoice_number,
                 i.student_uid,
                 i.academic_year_id,
-                COALESCE(s.student_name, ec.child_name, f.family_name, c.customer_name, p.family_uid) AS student_name,
+                COALESCE(s.student_name, ec.child_name, f.sponsor_full_name, f.father_name, f.mother_name, c.customer_name, p.family_uid) AS student_name,
                 COALESCE(i.student_uid, ec.child_uid, p.family_uid) AS student_identifier,
                 u.display_name AS received_by_name
             FROM " . self::t( 'olama_payments' ) . " p
             LEFT JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = p.invoice_id
-            LEFT JOIN " . self::t( 'olama_students' ) . " s ON s.student_uid = i.student_uid
-            LEFT JOIN " . self::t( 'olama_families' ) . " f ON f.family_uid = p.family_uid
+            LEFT JOIN " . self::t( 'olama_core_students' ) . " s ON s.student_uid = i.student_uid OR s.oracle_student_id = i.student_uid
+            LEFT JOIN " . self::t( 'olama_core_families' ) . " f ON f.family_uid = p.family_uid OR f.oracle_family_id = p.family_uid
             LEFT JOIN " . self::t( 'olama_customers' ) . " c ON c.customer_uid = p.family_uid
             LEFT JOIN " . self::t( 'olama_customer_children' ) . " ec ON ec.id = i.ext_child_id
             LEFT JOIN " . self::t( 'olama_cash_sessions' ) . " cs ON cs.id = p.cash_session_id
@@ -546,6 +546,160 @@ class Olama_Reg_Billing_Reports {
         ];
     }
 
+    /**
+     * Return balances for contract families only.
+     *
+     * Olama Core remains the source of family names and phone numbers. Financial
+     * values are calculated from this module's posted invoice activity.
+     */
+    public static function get_family_balances_report( array $filters = [] ): array {
+        global $wpdb;
+
+        $year_id = absint( $filters['year_id'] ?? 0 );
+        $search  = sanitize_text_field( $filters['search'] ?? '' );
+
+        $agreement_year = $year_id > 0
+            ? $wpdb->prepare( ' AND a.academic_year_id = %d', $year_id )
+            : '';
+        $invoice_year = $year_id > 0
+            ? $wpdb->prepare( ' AND i.academic_year_id = %d', $year_id )
+            : '';
+
+        $agreement_scope = "SELECT
+                a.payer_id AS family_ref,
+                MAX(NULLIF(a.oracle_family_id, '')) AS oracle_family_id
+            FROM " . self::t( 'olama_agreements' ) . " a
+            WHERE a.payer_type = 'family'
+              AND a.payer_id IS NOT NULL
+              AND a.payer_id <> ''
+              AND COALESCE(a.status, '') <> 'cancelled'
+              {$agreement_year}
+            GROUP BY a.payer_id";
+
+        $invoice_totals = "SELECT
+                COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid) AS family_ref,
+                SUM(CAST(i.total AS DECIMAL(18,2))) AS invoice_debit
+            FROM " . self::t( 'olama_invoices' ) . " i
+            WHERE i.status NOT IN ('draft', 'cancelled')
+              AND COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid) IS NOT NULL
+              {$invoice_year}
+            GROUP BY COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid)";
+
+        $adjustment_totals = "SELECT
+                COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid) AS family_ref,
+                SUM(CASE WHEN adj.type = 'debit' THEN CAST(adj.amount AS DECIMAL(18,2)) ELSE 0 END) AS adjustment_debit,
+                SUM(CASE WHEN adj.type = 'credit' THEN CAST(adj.amount AS DECIMAL(18,2)) ELSE 0 END) AS adjustment_credit
+            FROM " . self::t( 'olama_invoice_adjustments' ) . " adj
+            INNER JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = adj.invoice_id
+            WHERE adj.status = 'issued'
+              AND i.status NOT IN ('draft', 'cancelled')
+              {$invoice_year}
+            GROUP BY COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid)";
+
+        $payment_totals = "SELECT
+                COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid) AS family_ref,
+                SUM(CASE
+                    WHEN p.method = 'reversal' OR p.amount < 0 OR p.reversed_payment_id IS NOT NULL
+                    THEN ABS(CAST(p.amount AS DECIMAL(18,2))) ELSE 0 END) AS payment_debit,
+                SUM(CASE
+                    WHEN p.method = 'reversal' OR p.amount < 0 OR p.reversed_payment_id IS NOT NULL
+                    THEN 0 ELSE ABS(CAST(p.amount AS DECIMAL(18,2))) END) AS payment_credit
+            FROM " . self::t( 'olama_payments' ) . " p
+            INNER JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = p.invoice_id
+            WHERE i.status NOT IN ('draft', 'cancelled')
+              AND (p.status IS NULL OR p.status = '' OR p.status IN ('posted', 'reversed'))
+              {$invoice_year}
+            GROUP BY COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid)";
+
+        $search_sql    = '';
+        $search_params = [];
+        if ( $search !== '' ) {
+            $like = '%' . $wpdb->esc_like( $search ) . '%';
+            $search_sql = ' WHERE (
+                scope.family_ref LIKE %s
+                OR scope.oracle_family_id LIKE %s
+                OR f.oracle_family_id LIKE %s
+                OR f.sponsor_full_name LIKE %s
+                OR f.father_name LIKE %s
+                OR f.mother_name LIKE %s
+            )';
+            $search_params = array_fill( 0, 6, $like );
+        }
+
+        $query = "SELECT
+                scope.family_ref,
+                COALESCE(NULLIF(f.oracle_family_id, ''), NULLIF(scope.oracle_family_id, ''), scope.family_ref) AS family_number,
+                COALESCE(
+                    NULLIF(f.sponsor_full_name, ''),
+                    NULLIF(f.father_name, ''),
+                    NULLIF(f.mother_name, ''),
+                    scope.family_ref
+                ) AS family_name,
+                COALESCE(f.father_mobile, '') AS father_mobile,
+                COALESCE(f.mother_mobile, '') AS mother_mobile,
+                COALESCE(inv.invoice_debit, 0) AS invoice_debit,
+                COALESCE(adj.adjustment_debit, 0) AS adjustment_debit,
+                COALESCE(adj.adjustment_credit, 0) AS adjustment_credit,
+                COALESCE(pay.payment_debit, 0) AS payment_debit,
+                COALESCE(pay.payment_credit, 0) AS payment_credit
+            FROM ({$agreement_scope}) scope
+            LEFT JOIN " . self::t( 'olama_core_families' ) . " f
+                ON f.oracle_family_id = scope.family_ref
+                OR f.family_uid = scope.family_ref
+                OR (
+                    scope.oracle_family_id IS NOT NULL
+                    AND (
+                        f.oracle_family_id = scope.oracle_family_id
+                        OR f.family_uid = scope.oracle_family_id
+                    )
+                )
+            LEFT JOIN ({$invoice_totals}) inv
+                ON inv.family_ref = scope.family_ref OR inv.family_ref = scope.oracle_family_id
+            LEFT JOIN ({$adjustment_totals}) adj
+                ON adj.family_ref = scope.family_ref OR adj.family_ref = scope.oracle_family_id
+            LEFT JOIN ({$payment_totals}) pay
+                ON pay.family_ref = scope.family_ref OR pay.family_ref = scope.oracle_family_id
+            {$search_sql}
+            ORDER BY CAST(COALESCE(NULLIF(f.oracle_family_id, ''), scope.family_ref) AS UNSIGNED), family_name";
+
+        $rows = $search_params
+            ? ( $wpdb->get_results( $wpdb->prepare( $query, ...$search_params ) ) ?: [] )
+            : ( $wpdb->get_results( $query ) ?: [] );
+
+        $summary = [
+            'family_count' => count( $rows ),
+            'total_debit'  => 0.0,
+            'total_credit' => 0.0,
+            'balance'      => 0.0,
+        ];
+
+        foreach ( $rows as $row ) {
+            $total_debit  = (float) $row->invoice_debit + (float) $row->adjustment_debit + (float) $row->payment_debit;
+            $total_credit = (float) $row->adjustment_credit + (float) $row->payment_credit;
+            $net_balance  = round( $total_debit - $total_credit, 2 );
+
+            $row->total_debit  = round( $total_debit, 2 );
+            $row->total_credit = round( $total_credit, 2 );
+            $row->balance      = $net_balance;
+
+            $summary['total_debit']  += $row->total_debit;
+            $summary['total_credit'] += $row->total_credit;
+        }
+
+        $summary['total_debit']  = round( $summary['total_debit'], 2 );
+        $summary['total_credit'] = round( $summary['total_credit'], 2 );
+        $summary['balance']      = round( $summary['total_debit'] - $summary['total_credit'], 2 );
+
+        return [
+            'rows'    => $rows,
+            'summary' => $summary,
+            'filters' => [
+                'year_id' => $year_id,
+                'search'  => $search,
+            ],
+        ];
+    }
+
     public static function get_family_statement_report( array $filters = [] ): array {
         global $wpdb;
 
@@ -567,19 +721,20 @@ class Olama_Reg_Billing_Reports {
         ];
 
         $customer_id = 0;
+        $family_refs  = $uid !== '' ? [ $uid ] : [];
+        $balance_uid  = $uid;
         if ( $uid !== '' ) {
             if ( $entity_type === 'family' ) {
-                $entity_row = $wpdb->get_row(
-                    $wpdb->prepare(
-                        "SELECT family_uid, family_name
-                         FROM " . self::t( 'olama_families' ) . "
-                         WHERE family_uid = %s
-                         LIMIT 1",
-                        $uid
-                    )
-                );
+                $entity_row = Olama_Reg_Family::get_family( $uid );
                 if ( $entity_row ) {
                     $entity['name'] = (string) $entity_row->family_name;
+                    $balance_uid    = (string) ( $entity_row->oracle_family_id ?? $entity_row->family_uid ?? $uid );
+                    $family_refs    = array_values( array_unique( array_filter( [
+                        $uid,
+                        (string) ( $entity_row->family_uid ?? '' ),
+                        (string) ( $entity_row->oracle_family_id ?? '' ),
+                        (string) ( $entity_row->core_family_uid ?? '' ),
+                    ] ) ) );
                 }
             } else {
                 $entity_row = $wpdb->get_row(
@@ -599,12 +754,9 @@ class Olama_Reg_Billing_Reports {
         }
 
         if ($student_uid !== '' && $entity_type === 'family') {
-            $student_name = $wpdb->get_var($wpdb->prepare(
-                "SELECT student_name FROM {$wpdb->prefix}olama_students WHERE student_uid = %s LIMIT 1",
-                $student_uid
-            ));
-            if ($student_name) {
-                $entity['name'] .= ' - ' . $student_name;
+            $student = Olama_Reg_Student::get_student( $student_uid );
+            if ( $student ) {
+                $entity['name'] .= ' - ' . $student->student_name;
             }
         }
 
@@ -617,8 +769,14 @@ class Olama_Reg_Billing_Reports {
                 $params[]     = $customer_id > 0 ? $customer_id : -1;
                 $params[]     = $uid;
             } else {
-                $conditions[] = 'i.family_uid = %s';
-                $params[]     = $uid;
+                $family_conditions = [];
+                foreach ( $family_refs as $family_ref ) {
+                    $family_conditions[] = 'i.family_uid = %s';
+                    $params[]            = $family_ref;
+                    $family_conditions[] = 'i.oracle_family_id = %s';
+                    $params[]            = $family_ref;
+                }
+                $conditions[] = '(' . implode( ' OR ', $family_conditions ) . ')';
             }
         }
 
@@ -645,6 +803,10 @@ class Olama_Reg_Billing_Reports {
                 i.issue_date AS movement_date,
                 i.created_at AS created_at,
                 'invoice' AS entry_type,
+                CASE
+                    WHEN i.agreement_id IS NOT NULL AND i.agreement_id > 0 THEN 'agreement'
+                    ELSE 'service'
+                END AS entry_subtype,
                 i.invoice_number AS reference_no,
                 COALESCE(i.notes, '') AS details,
                 CAST(i.total AS DECIMAL(18,2)) AS debit_amount,
@@ -657,6 +819,7 @@ class Olama_Reg_Billing_Reports {
                 DATE(adj.created_at) AS movement_date,
                 adj.created_at AS created_at,
                 adj.type AS entry_type,
+                '' AS entry_subtype,
                 CONCAT(COALESCE(i.invoice_number, '#'), ' / ', COALESCE(adj.adjustment_no, CONCAT('#', adj.id))) AS reference_no,
                 COALESCE(adj.reason, adj.notes, '') AS details,
                 CASE WHEN adj.type = 'debit' THEN CAST(adj.amount AS DECIMAL(18,2)) ELSE 0.00 END AS debit_amount,
@@ -673,6 +836,10 @@ class Olama_Reg_Billing_Reports {
                     WHEN p.method = 'reversal' OR p.amount < 0 OR p.reversed_payment_id IS NOT NULL THEN 'payment_reversal'
                     ELSE 'payment'
                 END AS entry_type,
+                CASE
+                    WHEN p.method = 'reversal' THEN ''
+                    ELSE COALESCE(p.method, '')
+                END AS entry_subtype,
                 COALESCE(p.payment_no, CONCAT('#', p.id)) AS reference_no,
                 COALESCE(p.notes, p.reference, '') AS details,
                 CASE
@@ -720,7 +887,7 @@ class Olama_Reg_Billing_Reports {
 
         $opening_balance = 0.0;
         if ( $entity_type === 'family' && $year_id > 0 && class_exists( 'Olama_Reg_Family_Financial_Summary' ) ) {
-            $opening_balance = Olama_Reg_Family_Financial_Summary::get_previous_balance( $uid, $year_id );
+            $opening_balance = Olama_Reg_Family_Financial_Summary::get_previous_balance( $balance_uid, $year_id );
         }
 
         if ( $date_from ) {
@@ -780,6 +947,38 @@ class Olama_Reg_Billing_Reports {
                 'date_to'     => $date_to,
             ],
         ];
+    }
+
+    public static function format_statement_entry_type( string $entry_type, string $entry_subtype = '' ): string {
+        $base_labels = [
+            'invoice'          => __( 'فاتورة', 'olama-registration' ),
+            'payment'          => __( 'دفعة', 'olama-registration' ),
+            'payment_reversal' => __( 'عكس دفعة', 'olama-registration' ),
+            'credit'           => __( 'إشعار دائن', 'olama-registration' ),
+            'debit'            => __( 'إشعار مدين', 'olama-registration' ),
+        ];
+        $base = $base_labels[ $entry_type ] ?? $entry_type;
+
+        $subtype_labels = [];
+        if ( $entry_type === 'invoice' ) {
+            $subtype_labels = [
+                'agreement' => __( 'عقد', 'olama-registration' ),
+                'service'   => __( 'خدمات إضافية', 'olama-registration' ),
+            ];
+        } elseif ( in_array( $entry_type, [ 'payment', 'payment_reversal' ], true ) ) {
+            $subtype_labels = [
+                'cash'          => __( 'نقدي', 'olama-registration' ),
+                'bank_transfer' => __( 'تحويل بنكي', 'olama-registration' ),
+                'online'        => __( 'دفع إلكتروني', 'olama-registration' ),
+                'electronic'    => __( 'دفع إلكتروني', 'olama-registration' ),
+                'card'          => __( 'بطاقة', 'olama-registration' ),
+                'cheque'        => __( 'شيك', 'olama-registration' ),
+                'check'         => __( 'شيك', 'olama-registration' ),
+            ];
+        }
+
+        $subtype = $subtype_labels[ $entry_subtype ] ?? '';
+        return $subtype !== '' ? $base . ' - ' . $subtype : $base;
     }
 
     private static function sanitize_report_date( string $date ): string {

@@ -99,9 +99,9 @@ class Olama_Reg_Billing_Invoice
     {
         global $wpdb;
 
-        $family_uid = sanitize_text_field($data['family_uid'] ?? '');
-        if (!$family_uid) {
-            return new \WP_Error('missing_family', __('Family UID is required.', 'olama-registration'));
+        $identity = self::resolve_payer_context($data);
+        if (is_wp_error($identity)) {
+            return $identity;
         }
 
         $year_id = absint($data['academic_year_id'] ?? 0);
@@ -138,11 +138,19 @@ class Olama_Reg_Billing_Invoice
 
         $payload = [
             'invoice_number' => self::generate_number($year_id),
-            'family_uid' => $family_uid,
-            'student_uid' => sanitize_text_field($data['student_uid'] ?? '') ?: null,
+            'payer_type' => $identity['payer_type'],
+            'family_uid' => $identity['family_uid'],
+            'oracle_family_id' => $identity['oracle_family_id'],
+            'student_uid' => $identity['student_uid'],
+            'oracle_student_id' => $identity['oracle_student_id'],
+            'customer_id' => $identity['customer_id'],
             'academic_year_id' => $year_id,
+            'study_year' => Olama_Reg_Academic_Year_Context::core_study_year($year_id),
+            'payer_name_snapshot' => $identity['payer_name_snapshot'],
+            'student_name_snapshot' => $identity['student_name_snapshot'],
+            'grade_name_snapshot' => $identity['grade_name_snapshot'],
             'fee_template_id' => $fee_template_id ?: null,
-            'ext_customer_id' => absint($data['ext_customer_id'] ?? 0) ?: null,
+            'ext_customer_id' => $identity['customer_id'],
             'ext_child_id' => absint($data['ext_child_id'] ?? 0) ?: null,
             'agreement_id' => absint($data['linked_agreement_id'] ?? 0) ?: null,
             'issue_date' => $issue_date,
@@ -156,6 +164,34 @@ class Olama_Reg_Billing_Invoice
             'created_by' => get_current_user_id(),
         ];
 
+        // Resolve and validate every Core student before creating the invoice.
+        $prepared_items = [];
+        $items = is_array($data['items'] ?? null) ? $data['items'] : [];
+        foreach ($items as $item) {
+            $qty = self::safe_decimal($item['quantity'] ?? 1);
+            $unit_price = self::safe_decimal($item['unit_price'] ?? 0);
+            $item_student = null;
+            $item_student_uid = sanitize_text_field($item['student_uid'] ?? $identity['student_uid'] ?? '');
+            if ($item_student_uid !== '') {
+                $item_student = Olama_Reg_Core_Gateway::student($item_student_uid);
+                if (!$item_student || ($identity['family_uid'] && $item_student->family_uid !== $identity['family_uid'])) {
+                    return new \WP_Error('invalid_student', __('The selected student does not belong to this family.', 'olama-registration'));
+                }
+            }
+
+            $prepared_items[] = [
+                'agreement_fee_id' => absint($item['agreement_fee_id'] ?? 0) ?: null,
+                'student_uid' => $item_student ? $item_student->student_uid : null,
+                'oracle_student_id' => $item_student ? $item_student->oracle_student_id : null,
+                'student_name_snapshot' => $item_student ? $item_student->display_name : null,
+                'fee_category' => sanitize_text_field($item['fee_category'] ?? '') ?: null,
+                'description' => sanitize_text_field($item['description'] ?? ''),
+                'quantity' => $qty,
+                'unit_price' => $unit_price,
+                'line_total' => round($qty * $unit_price, 2),
+            ];
+        }
+
         $result = $wpdb->insert(self::t('olama_invoices'), $payload);
         if (!$result) {
             return new \WP_Error('db_error', $wpdb->last_error);
@@ -164,17 +200,9 @@ class Olama_Reg_Billing_Invoice
         $invoice_id = (int) $wpdb->insert_id;
 
         // Insert line items
-        $items = is_array($data['items'] ?? null) ? $data['items'] : [];
-        foreach ($items as $item) {
-            $qty = self::safe_decimal($item['quantity'] ?? 1);
-            $unit_price = self::safe_decimal($item['unit_price'] ?? 0);
-            $wpdb->insert(self::t('olama_invoice_items'), [
-                'invoice_id' => $invoice_id,
-                'description' => sanitize_text_field($item['description'] ?? ''),
-                'quantity' => $qty,
-                'unit_price' => $unit_price,
-                'line_total' => round($qty * $unit_price, 2),
-            ]);
+        foreach ($prepared_items as $item) {
+            $item['invoice_id'] = $invoice_id;
+            $wpdb->insert(self::t('olama_invoice_items'), $item);
         }
 
         self::recalculate_totals($invoice_id);
@@ -215,6 +243,83 @@ class Olama_Reg_Billing_Invoice
         }
 
         return $invoice_id;
+    }
+
+    private static function resolve_payer_context(array $data): array|\WP_Error
+    {
+        global $wpdb;
+
+        $agreement = null;
+        $agreement_id = absint($data['linked_agreement_id'] ?? $data['agreement_id'] ?? 0);
+        if ($agreement_id > 0) {
+            $agreement = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM " . self::t('olama_agreements') . " WHERE id = %d",
+                $agreement_id
+            ));
+        }
+
+        $payer_type = sanitize_key($data['payer_type'] ?? ($agreement->payer_type ?? ''));
+        if ($payer_type === '') {
+            $payer_type = !empty($data['ext_customer_id']) ? 'customer' : 'family';
+        }
+
+        if ($payer_type === 'family') {
+            $reference = sanitize_text_field(
+                $data['family_uid']
+                ?? ($agreement->family_uid ?? null)
+                ?? ($agreement->payer_ref ?? null)
+                ?? ($agreement->payer_id ?? '')
+            );
+            $family = Olama_Reg_Core_Gateway::family($reference);
+            if (!$family) {
+                return new \WP_Error('missing_family', __('A valid Olama Core family is required.', 'olama-registration'));
+            }
+
+            $student_uid = sanitize_text_field($data['student_uid'] ?? '');
+            $student = $student_uid !== '' ? Olama_Reg_Core_Gateway::student($student_uid) : null;
+            if ($student_uid !== '' && (!$student || $student->family_uid !== $family->family_uid)) {
+                return new \WP_Error('invalid_student', __('The selected student does not belong to this family.', 'olama-registration'));
+            }
+
+            return [
+                'payer_type' => 'family',
+                'family_uid' => $family->family_uid,
+                'oracle_family_id' => $family->oracle_family_id,
+                'student_uid' => $student ? $student->student_uid : null,
+                'oracle_student_id' => $student ? $student->oracle_student_id : null,
+                'customer_id' => null,
+                'payer_name_snapshot' => $family->display_name,
+                'student_name_snapshot' => $student ? $student->display_name : null,
+                'grade_name_snapshot' => $student ? $student->grade_name : null,
+            ];
+        }
+
+        if ($payer_type === 'customer') {
+            $reference = $data['customer_id']
+                ?? $data['ext_customer_id']
+                ?? ($agreement->customer_id ?? null)
+                ?? ($agreement->payer_id ?? 0);
+            $customer = is_numeric($reference)
+                ? Olama_Reg_Customer::get((int) $reference)
+                : Olama_Reg_Customer::get_by_uid(sanitize_text_field($reference));
+            if (!$customer) {
+                return new \WP_Error('missing_customer', __('A valid customer is required.', 'olama-registration'));
+            }
+
+            return [
+                'payer_type' => 'customer',
+                'family_uid' => null,
+                'oracle_family_id' => null,
+                'student_uid' => null,
+                'oracle_student_id' => null,
+                'customer_id' => (int) $customer->id,
+                'payer_name_snapshot' => $customer->customer_name,
+                'student_name_snapshot' => null,
+                'grade_name_snapshot' => null,
+            ];
+        }
+
+        return new \WP_Error('invalid_payer_type', __('Invalid payer type.', 'olama-registration'));
     }
 
     // ── Update ────────────────────────────────────────────────────────────────

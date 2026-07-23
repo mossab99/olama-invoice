@@ -35,6 +35,14 @@ class Olama_Reg_Agreement_Fees {
         ];
 
         $insert_data = wp_parse_args( $data, $defaults );
+        $insert_data = self::normalize_participant_fields( $agreement_id, $insert_data );
+        if ( $insert_data === false ) {
+            return false;
+        }
+        $insert_data['due_date'] = self::normalize_due_date(
+            isset( $insert_data['due_date'] ) ? (string) $insert_data['due_date'] : '',
+            $agreement_id
+        );
         
         // Auto-calculate net if not explicitly provided
         if ( ! isset( $data['net_amount'] ) ) {
@@ -77,6 +85,16 @@ class Olama_Reg_Agreement_Fees {
 
         // Remove un-updatable fields
         unset( $data['id'], $data['agreement_id'], $data['invoice_id'], $data['paid_status'] );
+        $data = self::normalize_participant_fields( (int) $existing->agreement_id, $data );
+        if ( $data === false ) {
+            return false;
+        }
+        if ( array_key_exists( 'due_date', $data ) ) {
+            $data['due_date'] = self::normalize_due_date(
+                isset( $data['due_date'] ) ? (string) $data['due_date'] : '',
+                (int) $existing->agreement_id
+            );
+        }
 
         // Recalculate net_amount if amount or discount changed
         if ( isset( $data['amount'] ) || isset( $data['discount'] ) ) {
@@ -176,6 +194,101 @@ class Olama_Reg_Agreement_Fees {
         $wpdb->update( $table, [ 'paid_status' => 'paid' ], [ 'id' => $fee_id ] );
     }
 
+    private static function normalize_participant_fields( int $agreement_id, array $data ): array|false {
+        global $wpdb;
+
+        $agreement = $wpdb->get_row( $wpdb->prepare(
+            "SELECT payer_type, payer_id, family_uid, oracle_family_id, customer_id, academic_year_id
+             FROM {$wpdb->prefix}olama_agreements
+             WHERE id = %d",
+            $agreement_id
+        ) );
+        if ( ! $agreement ) {
+            return false;
+        }
+
+        $reference = sanitize_text_field(
+            $data['student_uid'] ?? $data['participant_ref'] ?? $data['child_id'] ?? ''
+        );
+        if ( $reference === '' && $agreement->payer_type === 'family' ) {
+            $family_reference = (string) ( $agreement->family_uid ?: $agreement->payer_id );
+            $family_students = Olama_Reg_Core_Gateway::students_for_family(
+                $family_reference,
+                (int) $agreement->academic_year_id
+            );
+            if ( count( $family_students ) === 1 ) {
+                $reference = (string) $family_students[0]->student_uid;
+            }
+        }
+        if ( $reference === '' ) {
+            return $data;
+        }
+
+        if ( $agreement->payer_type === 'family' ) {
+            $student = Olama_Reg_Core_Gateway::student( $reference );
+            $family_uid = (string) ( $agreement->family_uid ?: $agreement->payer_id );
+            if ( ! $student || $student->family_uid !== $family_uid ) {
+                return false;
+            }
+
+            $data['participant_ref']  = $student->student_uid;
+            $data['student_uid']      = $student->student_uid;
+            $data['oracle_student_id'] = $student->oracle_student_id;
+            $data['child_id']         = $student->student_uid; // Transitional renderer compatibility.
+        } else {
+            $child_id = absint( $reference );
+            $customer_id = (int) ( $agreement->customer_id ?: $agreement->payer_id );
+            $child = $child_id ? Olama_Reg_Child::get( $child_id ) : null;
+            if ( ! $child || (int) $child->customer_id !== $customer_id ) {
+                return false;
+            }
+
+            $data['participant_ref'] = (string) $child_id;
+            $data['student_uid'] = null;
+            $data['oracle_student_id'] = null;
+            $data['child_id'] = (string) $child_id;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Store dates in MySQL format while accepting the datepicker's day-first
+     * value. An empty or invalid value defaults to the agreement creation date.
+     */
+    private static function normalize_due_date( string $value, int $agreement_id ): string {
+        global $wpdb;
+
+        $default_date = (string) $wpdb->get_var( $wpdb->prepare(
+            "SELECT DATE(created_at) FROM {$wpdb->prefix}olama_agreements WHERE id = %d",
+            $agreement_id
+        ) );
+        if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $default_date ) ) {
+            $default_date = current_time( 'Y-m-d' );
+        }
+
+        $value = trim( $value );
+        if ( $value === '' || $value === '0000-00-00' ) {
+            return $default_date;
+        }
+
+        if ( preg_match( '/^(\d{4})-(\d{1,2})-(\d{1,2})$/', $value, $matches ) ) {
+            $year = (int) $matches[1];
+            $month = (int) $matches[2];
+            $day = (int) $matches[3];
+        } elseif ( preg_match( '/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/', $value, $matches ) ) {
+            $day = (int) $matches[1];
+            $month = (int) $matches[2];
+            $year = (int) $matches[3];
+        } else {
+            return $default_date;
+        }
+
+        return checkdate( $month, $day, $year )
+            ? sprintf( '%04d-%02d-%02d', $year, $month, $day )
+            : $default_date;
+    }
+
     /**
      * Apply fees from a billing fee template
      */
@@ -201,17 +314,24 @@ class Olama_Reg_Agreement_Fees {
             'paid_status'  => 'unpaid'
         ] );
 
-        $sort_order = 0;
+        $template_total = 0.0;
         foreach ( $template->items as $item ) {
-            $base_amount = (float) ( $item['amount'] ?? 0 );
-            self::add( $agreement_id, [
-                'fee_category' => 'general',
-                'label'        => $item['description'] ?? '',
-                'amount'       => $base_amount,
-                'discount'     => 0,
-                'due_date'     => null,
-                'sort_order'   => $sort_order++,
-            ] );
+            $template_total += (float) ( $item['amount'] ?? 0 );
+        }
+
+        // A fee template is one commercial agreement line. Its component items
+        // are a read-only breakdown, not separate agreement fees.
+        $fee_id = self::add( $agreement_id, [
+            'fee_category' => (string) $template_id,
+            'label'        => (string) $template->template_name,
+            'amount'       => $template_total,
+            'discount'     => 0,
+            'due_date'     => null,
+            'sort_order'   => 0,
+        ] );
+
+        if ( ! $fee_id ) {
+            return false;
         }
 
         Olama_Reg_Agreement::recalculate_total( $agreement_id );

@@ -61,7 +61,7 @@ $clauses = Olama_Reg_Clause_Bank::get_all();
         </a>
     </nav>
 
-    <div id="col-container" class="wp-clearfix">
+    <div id="col-container" class="wp-clearfix olama-clause-bank-stack">
         <div id="col-left">
             <div class="col-wrap">
                 <div class="olama-reg-section">
@@ -105,6 +105,9 @@ $clauses = Olama_Reg_Clause_Bank::get_all();
         <div id="col-right">
             <div class="col-wrap">
                 <div class="olama-reg-section">
+                    <h3 class="olama-reg-section-title">
+                        <?php esc_html_e( 'قائمة بنود العقود', 'olama-registration' ); ?>
+                    </h3>
                     <div class="olama-reg-table-wrap">
                         <table class="olama-reg-fin-table">
                             <thead>

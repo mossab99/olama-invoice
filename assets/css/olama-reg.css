@@ -405,6 +405,41 @@
 }
 
 /* ── 9. Form Grid System ────────────────────────────────────────────── */
+.olama-reg-wrap .olama-clause-bank-stack {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 24px !important;
+}
+
+.olama-reg-wrap .olama-clause-bank-stack > #col-right,
+.olama-reg-wrap .olama-clause-bank-stack > #col-left {
+    float: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.olama-reg-wrap .olama-clause-bank-stack > #col-right {
+    order: 1;
+}
+
+.olama-reg-wrap .olama-clause-bank-stack > #col-left {
+    order: 2;
+}
+
+.olama-reg-wrap .olama-clause-bank-stack .col-wrap {
+    padding: 0 !important;
+}
+
+.olama-reg-wrap .olama-clause-bank-stack .olama-reg-table-wrap {
+    overflow-x: auto;
+}
+
+.olama-reg-wrap .olama-clause-bank-stack form {
+    box-sizing: border-box;
+    width: 100%;
+}
+
 .olama-reg-wrap .olama-reg-grid {
     display: grid !important;
     grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)) !important;
@@ -424,6 +459,10 @@
     flex-direction: column !important;
     gap: 6px !important;
     position: relative !important;
+}
+
+.olama-reg-wrap .olama-reg-field[hidden] {
+    display: none !important;
 }
 
 .olama-reg-wrap .olama-reg-field--wide {
@@ -2458,4 +2497,146 @@
     background: #dcfce7 !important;
     color: #15803d !important;
     border-color: #bbf7d0 !important;
+}
+.os-agr-fee-description {
+    min-width: 210px;
+}
+
+/*
+ * The fee workspace has nine columns. Keep numeric controls wide enough to
+ * display three-decimal Jordanian dinar amounts instead of clipping digits.
+ */
+#os-agreement-app #os-agr-fees-table {
+    min-width: 1180px !important;
+}
+
+#os-agreement-app #os-agr-fees-table th {
+    width: auto !important;
+}
+
+#os-agr-fees-table .os-agr-fees-col-template { width: 155px; }
+#os-agr-fees-table .os-agr-fees-col-subscriber { width: 155px; }
+#os-agr-fees-table .os-agr-fees-col-details { width: 220px; }
+#os-agr-fees-table .os-agr-fees-col-amount { width: 125px; }
+#os-agr-fees-table .os-agr-fees-col-discount { width: 115px; }
+#os-agr-fees-table .os-agr-fees-col-net { width: 100px; }
+#os-agr-fees-table .os-agr-fees-col-due-date { width: 125px; }
+#os-agr-fees-table .os-agr-fees-col-status { width: 85px; }
+#os-agr-fees-table .os-agr-fees-col-actions { width: 100px; }
+
+#os-agreement-app #os-agr-fees-table .os-agr-money-input {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    padding-right: 8px !important;
+    padding-left: 8px !important;
+    direction: ltr !important;
+    text-align: right !important;
+    font-variant-numeric: tabular-nums !important;
+}
+
+#os-agreement-app #os-agr-fees-table td:nth-child(4),
+#os-agreement-app #os-agr-fees-table td:nth-child(5) {
+    padding-right: 8px !important;
+    padding-left: 8px !important;
+}
+
+.os-agr-fee-template-name {
+    display: block;
+    margin-bottom: 7px;
+    color: #17172f;
+}
+
+.os-agr-fee-breakdown {
+    display: grid;
+    gap: 3px;
+    padding: 7px 9px;
+    border: 1px solid #e3e7ee;
+    border-radius: 6px;
+    background: #f8fafc;
+    font-size: 11px;
+    color: #596273;
+}
+
+.os-agr-fee-breakdown:empty {
+    display: none;
+}
+
+.os-agr-fee-breakdown > span {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.os-agr-fee-breakdown b {
+    color: #17172f;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* Cash-session physical-count reconciliation. */
+.olama-reg-wrap .olama-reg-readonly-value {
+    box-sizing: border-box;
+    min-height: 42px;
+    padding: 10px 12px;
+    border: 1px solid #d7dde8;
+    border-radius: 7px;
+    background: #f5f7fa;
+    color: #17172f;
+    font-weight: 800;
+    direction: ltr;
+    text-align: right;
+}
+
+.olama-reg-wrap .os-cash-opening-variance {
+    padding: 12px;
+    border: 1px solid #f2c94c;
+    border-radius: 8px;
+    background: #fff8df;
+    color: #7a5200;
+}
+
+.olama-reg-wrap .os-cash-acknowledgement {
+    display: flex;
+    gap: 7px;
+    align-items: flex-start;
+    margin-top: 8px;
+    font-weight: 600;
+}
+
+.olama-reg-wrap .os-cash-cell-detail {
+    display: block;
+    margin-top: 4px;
+    color: #6b7280;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.olama-reg-wrap .os-cash-session-close-form,
+.olama-reg-wrap .os-cash-session-review-form {
+    display: grid;
+    gap: 6px;
+    min-width: 220px;
+}
+
+.olama-reg-wrap .os-cash-session-close-form label {
+    display: grid;
+    gap: 3px;
+    color: #5b6472;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.olama-reg-wrap .os-cash-session-close-form input,
+.olama-reg-wrap .os-cash-session-review-form input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 150px;
+}
+
+.olama-reg-wrap .os-cash-closing-variance {
+    padding: 5px 7px;
+    border-radius: 5px;
+    background: #fff1f1;
+    color: #b42318;
 }

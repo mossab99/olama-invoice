@@ -12,14 +12,11 @@ if ( ! $receipt ) {
     wp_die( __( 'Receipt not found.', 'olama-registration' ) );
 }
 
-// Fetch the family name dynamically for core olama_families
+// Enrolled family identity is owned by Olama Core.
 $family_name = '';
 if ( ! empty( $receipt->family_id ) ) {
-    global $wpdb;
-    $family_name = $wpdb->get_var( $wpdb->prepare(
-        "SELECT family_name FROM {$wpdb->prefix}olama_families WHERE family_uid = %s",
-        $receipt->family_id
-    ) );
+    $family = Olama_Reg_Family::get_family( (string) $receipt->family_id );
+    $family_name = $family ? (string) $family->family_name : '';
 }
 
 $school_settings = get_option('olama_school_settings', []);

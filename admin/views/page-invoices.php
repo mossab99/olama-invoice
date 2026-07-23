@@ -14,10 +14,7 @@ $prefilled_family_name = '';
 $is_family_locked = false;
 
 if ( $prefilled_family_uid ) {
-    $family_row = $wpdb->get_row( $wpdb->prepare(
-        "SELECT family_uid, family_name FROM {$wpdb->prefix}olama_families WHERE family_uid = %s LIMIT 1",
-        $prefilled_family_uid
-    ) );
+    $family_row = Olama_Reg_Family::get_family( $prefilled_family_uid );
     if ( $family_row ) {
         $prefilled_family_name = $family_row->family_name;
         $is_family_locked = true;
@@ -31,10 +28,7 @@ if ( $action === 'print' && $id ) {
         wp_die( esc_html__( 'Invoice not found.', 'olama-registration' ) );
     }
 
-    $family = $wpdb->get_row( $wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}olama_families WHERE family_uid = %s",
-        $invoice->family_uid
-    ) );
+    $family = Olama_Reg_Family::get_family( (string) $invoice->family_uid );
 
     $customer = null;
     if ( ! empty( $invoice->ext_customer_id ) || strpos( (string) $invoice->family_uid, 'CUST-' ) === 0 ) {
@@ -47,14 +41,11 @@ if ( $action === 'print' && $id ) {
 
     $payer_name = $customer
         ? (string) $customer->customer_name
-        : ( $family ? trim( (string) $family->father_first_name . ' ' . (string) $family->father_family_name ) : (string) $invoice->family_uid );
+        : ( $family ? (string) $family->family_name : (string) $invoice->family_uid );
     
     $student = null;
     if ( $invoice->student_uid ) {
-        $student = $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}olama_students WHERE student_uid = %s",
-            $invoice->student_uid
-        ) );
+        $student = Olama_Reg_Student::get_student( (string) $invoice->student_uid );
     }
 
     $year_name = '—';
@@ -322,7 +313,8 @@ if ( $filter_year ) {
 }
 if ( $search_q ) {
     $like = '%' . $wpdb->esc_like( $search_q ) . '%';
-    $where .= " AND (i.invoice_number LIKE %s OR i.family_uid LIKE %s OR f.family_name LIKE %s OR c.customer_name LIKE %s OR c.customer_uid LIKE %s OR ft.template_name LIKE %s OR a.agreement_number LIKE %s)";
+    $where .= " AND (i.invoice_number LIKE %s OR i.family_uid LIKE %s OR f.sponsor_full_name LIKE %s OR f.father_name LIKE %s OR c.customer_name LIKE %s OR c.customer_uid LIKE %s OR ft.template_name LIKE %s OR a.agreement_number LIKE %s)";
+    $params[] = $like;
     $params[] = $like;
     $params[] = $like;
     $params[] = $like;
@@ -332,7 +324,7 @@ if ( $search_q ) {
     $params[] = $like;
 }
 
-$query = "SELECT i.*, COALESCE(f.family_name, c.customer_name, '') AS father_first_name, '' AS father_family_name,
+$query = "SELECT i.*, COALESCE(f.sponsor_full_name, f.father_name, f.mother_name, c.customer_name, '') AS father_first_name, '' AS father_family_name,
                  ft.template_name AS fee_template_name,
                  ft.subject_type AS fee_subject_type,
                  ft.subject_value AS fee_subject_value,
@@ -340,11 +332,11 @@ $query = "SELECT i.*, COALESCE(f.family_name, c.customer_name, '') AS father_fir
                  s.student_name AS direct_student_name,
                  ec.child_name AS direct_child_name
           FROM " . $wpdb->prefix . "olama_invoices i
-          LEFT JOIN " . $wpdb->prefix . "olama_families f ON f.family_uid = i.family_uid
+          LEFT JOIN " . $wpdb->prefix . "olama_core_families f ON f.family_uid = i.family_uid OR f.oracle_family_id = i.family_uid
           LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.id = i.ext_customer_id OR c.customer_uid = i.family_uid
           LEFT JOIN " . $wpdb->prefix . "olama_fee_templates ft ON ft.id = i.fee_template_id
           LEFT JOIN " . $wpdb->prefix . "olama_agreements a ON a.id = i.agreement_id
-          LEFT JOIN " . $wpdb->prefix . "olama_students s ON s.student_uid = i.student_uid
+          LEFT JOIN " . $wpdb->prefix . "olama_core_students s ON s.student_uid = i.student_uid OR s.oracle_student_id = i.student_uid
           LEFT JOIN " . $wpdb->prefix . "olama_customer_children ec ON ec.id = i.ext_child_id
           WHERE {$where}
           ORDER BY i.issue_date DESC, i.id DESC";
@@ -386,9 +378,9 @@ foreach ( $invoices as $invoice_row ) {
             $covered_children = $wpdb->get_col( $wpdb->prepare(
                 "SELECT DISTINCT s.student_name
                  FROM {$wpdb->prefix}olama_agreement_fees af
-                 LEFT JOIN {$wpdb->prefix}olama_students s
-                    ON s.student_uid = af.child_id
-                    OR s.id = CAST(af.child_id AS UNSIGNED)
+                 LEFT JOIN {$wpdb->prefix}olama_core_students s
+                    ON s.student_uid = COALESCE(NULLIF(af.student_uid, ''), af.child_id)
+                    OR s.oracle_student_id = COALESCE(NULLIF(af.oracle_student_id, ''), af.child_id)
                  WHERE af.agreement_id = %d
                    AND af.child_id IS NOT NULL
                    AND af.child_id != ''

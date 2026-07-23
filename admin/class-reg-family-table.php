@@ -23,7 +23,6 @@ class Olama_Reg_Family_Table extends WP_List_Table {
 
     public function get_columns(): array {
         return [
-            'cb'                  => '<input type="checkbox">',
             'family_uid'          => __( 'رقم العائلة', 'olama-registration' ),
             'father_name'         => __( 'اسم الأب', 'olama-registration' ),
             'active_student_count'=> __( 'الطلاب النشطون', 'olama-registration' ),
@@ -36,12 +35,6 @@ class Olama_Reg_Family_Table extends WP_List_Table {
         return [
             'family_uid' => [ 'family_uid', true ],
             'is_active'  => [ 'is_active', false ],
-        ];
-    }
-
-    protected function get_bulk_actions(): array {
-        return [
-            'deactivate' => __( 'إلغاء التفعيل', 'olama-registration' ),
         ];
     }
 
@@ -70,10 +63,6 @@ class Olama_Reg_Family_Table extends WP_List_Table {
             [],
             $this->get_sortable_columns(),
         ];
-    }
-
-    protected function column_cb( $item ): string {
-        return '<input type="checkbox" name="family_uid[]" value="' . esc_attr( $item->family_uid ) . '">';
     }
 
     protected function column_family_uid( $item ): string {
@@ -111,8 +100,7 @@ class Olama_Reg_Family_Table extends WP_List_Table {
         $print_url = add_query_arg( [ 'page' => 'olama-registration-contacts', 'action' => 'print', 'family_uid' => $item->family_uid ], admin_url( 'admin.php' ) );
 
         return '<a href="' . esc_url( $edit_url ) . '" class="button button-small">' . __( 'فتح', 'olama-registration' ) . '</a> '
-             . '<a href="' . esc_url( $print_url ) . '" class="button button-small" target="_blank">' . '🖨️' . '</a> '
-             . '<button class="button button-small olama-reg-deactivate" data-uid="' . esc_attr( $item->family_uid ) . '">' . __( 'إلغاء تفعيل', 'olama-registration' ) . '</button>';
+             . '<a href="' . esc_url( $print_url ) . '" class="button button-small" target="_blank">' . '🖨️' . '</a>';
     }
 
     protected function column_default( $item, $column_name ): string {
@@ -121,7 +109,7 @@ class Olama_Reg_Family_Table extends WP_List_Table {
 
     protected function get_views(): array {
         $status  = sanitize_text_field( $_REQUEST['status'] ?? 'all' );
-        $base    = admin_url( 'admin.php?page=olama-registration' );
+        $base    = admin_url( 'admin.php?page=olama-registration-contacts&view=families' );
 
         $statuses = [
             'all'      => __( 'الكل',        'olama-registration' ),

@@ -260,6 +260,24 @@ class Olama_Reg_Agreement_Amendment {
             }
         }
 
+        if ( class_exists( 'Olama_Reg_Agreement_Invoice' ) ) {
+            $redistributed = Olama_Reg_Agreement_Invoice::redistribute_unpaid_balance(
+                (int) $amendment->agreement_id,
+                (string) $amendment->effective_date
+            );
+            if ( is_wp_error( $redistributed ) ) {
+                $wpdb->query( 'ROLLBACK' );
+                return $redistributed;
+            }
+
+            self::write_audit(
+                'agreement_installments_rescheduled',
+                $amendment_id,
+                null,
+                Olama_Reg_Agreement_Invoice::get_due_schedule( (int) $amendment->agreement_id )
+            );
+        }
+
         $updates = [
             'status'    => 'posted',
             'posted_by' => get_current_user_id(),

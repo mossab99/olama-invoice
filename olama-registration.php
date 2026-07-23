@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Olama Family Billing
  * Plugin URI:  https://olama.online/olama-registration
- * Description: Family-centric billing and invoicing system for Olama School. Requires Olama School System plugin.
- * Version:     1.3.2
+ * Description: Family-centric billing and invoicing system for Olama School. Family and student data is provided by Olama Core.
+ * Version:     2.1.0
  * Author:      د. مصعب الحنيطي
  * Author URI:  https://olama.online
  * Text Domain: olama-registration
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
-define( 'OLAMA_REG_VERSION',             '1.3.2' );
+define( 'OLAMA_REG_VERSION',             '2.1.0' );
 define( 'OLAMA_REG_MIN_SCHOOL_VERSION',  '2.3.9' );
 define( 'OLAMA_REG_PATH',               plugin_dir_path( __FILE__ ) );
 define( 'OLAMA_REG_URL',                plugin_dir_url( __FILE__ ) );
@@ -24,6 +24,17 @@ define( 'OLAMA_REG_FILE',               __FILE__ );
 add_action( 'plugins_loaded', 'olama_reg_init', 5 );
 
 function olama_reg_init() {
+
+    // Family and student identity records have a single source of truth.
+    if ( ! function_exists( 'olama_core' ) ) {
+        add_action( 'admin_notices', function () {
+            echo '<div class="notice notice-error"><p>'
+                . '<strong>Olama Family Billing:</strong> '
+                . esc_html__( 'Requires Olama Core to provide family and student data.', 'olama-registration' )
+                . '</p></div>';
+        } );
+        return;
+    }
 
     // 1. Check parent plugin class exists
     if ( ! class_exists( 'Olama_School_DB' ) ) {
@@ -54,6 +65,8 @@ function olama_reg_init() {
     require_once OLAMA_REG_PATH . 'includes/class-reg-status-labels.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-id-generator.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-activator.php';
+    require_once OLAMA_REG_PATH . 'includes/class-reg-academic-year-context.php';
+    require_once OLAMA_REG_PATH . 'includes/class-reg-core-gateway.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-family.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-student.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-customer.php';
@@ -69,6 +82,7 @@ function olama_reg_init() {
     require_once OLAMA_REG_PATH . 'includes/class-reg-clause-bank.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-agreement-invoice.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-agreement-templates.php';
+    require_once OLAMA_REG_PATH . 'includes/class-reg-contract-renderer.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-agreement-renderer.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-financial.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-billing-fees.php';
@@ -102,7 +116,7 @@ function olama_reg_init() {
 
     // Versioned migrations check on admin_init (handles code updates dynamically)
     add_action( 'admin_init', function() {
-        $target_version = '2.2.0'; // Bump this with each schema change
+        $target_version = '3.2.0'; // Cash-session physical-count reconciliation controls.
         $installed_version = get_option( 'olama_registration_db_version', '0' );
 
         if ( version_compare( $installed_version, $target_version, '<' ) ) {

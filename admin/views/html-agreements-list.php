@@ -27,9 +27,6 @@ global $wpdb;
         <a href="?page=olama-registration-agreements&tab=templates" class="nav-tab">
             <?php esc_html_e( 'نماذج العقود', 'olama-registration' ); ?>
         </a>
-        <a href="?page=olama-registration-agreements&tab=clauses" class="nav-tab">
-            <?php esc_html_e( 'بنود العقود العامة', 'olama-registration' ); ?>
-        </a>
     </nav>
 
     <div class="olama-reg-section" style="margin-top: 20px;">
