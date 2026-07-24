@@ -1184,6 +1184,14 @@
                         }
                     });
                 }
+
+                if (extraData && extraData.openFees) {
+                    $content
+                        .find('.olama-contract-tabs .nav-tab[href="#tab-fees"]')
+                        .first()
+                        .removeClass('os-disabled')
+                        .trigger('click');
+                }
             }).fail(function () {
                 $content.html('<div class="notice notice-error inline" style="margin:20px;"><p>تعذر تحميل النموذج.</p></div>');
             });
@@ -1561,8 +1569,27 @@
             OriginalFormModal.close();
         });
 
-        $(document).on('osHub:agreementSaved', function () {
+        $(document).on('osHub:agreementSaved', function (e, agreement) {
             refreshDashboardTiles(['agreements', 'invoices', 'financial', 'statement', 'history']);
+
+            // A new agreement is initially rendered without the fees table.
+            // Reload it in edit mode once it has an ID so fee rows can be added.
+            if (
+                agreement &&
+                agreement.wasNew &&
+                agreement.id &&
+                $('#os-hub-original-form-modal').is(':visible')
+            ) {
+                var title = 'تعديل العقد';
+                if (agreement.agreement_number) {
+                    title += ' #' + agreement.agreement_number;
+                }
+
+                OriginalFormModal.open('agreement', title, {
+                    id: agreement.id,
+                    openFees: 1
+                });
+            }
         });
 
         $(document).on('osHub:invoiceSaved', function () {

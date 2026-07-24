@@ -3154,7 +3154,9 @@
                         if (isHubEmbedded) {
                             jQuery('.os-nav-tabs .nav-tab[href="#tab-fees"]').removeClass('os-disabled');
                             jQuery('.os-nav-tabs .nav-tab[href="#tab-fees"]').trigger('click');
-                            jQuery(document).trigger('osHub:agreementSaved', [res.data]);
+                            jQuery(document).trigger('osHub:agreementSaved', [jQuery.extend({}, res.data, {
+                                wasNew: parseInt(formData.id, 10) === 0
+                            })]);
                         } else {
                             // Enable tabs in modal
                             jQuery('#modal-tab-link-fees').removeClass('os-disabled');
