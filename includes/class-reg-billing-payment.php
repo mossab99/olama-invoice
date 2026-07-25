@@ -18,6 +18,30 @@ class Olama_Reg_Billing_Payment {
         return $wpdb->prefix . $name;
     }
 
+    /**
+     * Accept dates typed with or without leading zeroes and store them in the
+     * canonical MySQL format. Invalid input must never silently become today.
+     */
+    private static function normalize_payment_date( string $raw ): string|\WP_Error {
+        $raw = trim( sanitize_text_field( $raw ) );
+        if ( $raw === '' ) {
+            return current_time( 'Y-m-d' );
+        }
+
+        if ( ! preg_match( '/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/', $raw, $parts ) ) {
+            return new \WP_Error( 'invalid_payment_date', __( 'تاريخ القبض غير صالح. استخدم الصيغة سنة-شهر-يوم.', 'olama-registration' ) );
+        }
+
+        $year = (int) $parts[1];
+        $month = (int) $parts[2];
+        $day = (int) $parts[3];
+        if ( ! checkdate( $month, $day, $year ) ) {
+            return new \WP_Error( 'invalid_payment_date', __( 'تاريخ القبض المدخل غير موجود في التقويم.', 'olama-registration' ) );
+        }
+
+        return sprintf( '%04d-%02d-%02d', $year, $month, $day );
+    }
+
     // ── Record a payment ──────────────────────────────────────────────────────
 
     /**
@@ -52,12 +76,9 @@ class Olama_Reg_Billing_Payment {
 
         $family_uid = (string) ( $invoice->family_uid ?? '' );
 
-        $payment_date = '';
-        if ( ! empty( $data['payment_date'] ) ) {
-            $raw = sanitize_text_field( $data['payment_date'] );
-            $payment_date = preg_match( '/^\d{4}-\d{2}-\d{2}$/', $raw ) ? $raw : date( 'Y-m-d' );
-        } else {
-            $payment_date = date( 'Y-m-d' );
+        $payment_date = self::normalize_payment_date( (string) ( $data['payment_date'] ?? '' ) );
+        if ( is_wp_error( $payment_date ) ) {
+            return $payment_date;
         }
 
         $valid_methods = [ 'cash', 'bank_transfer', 'cheque', 'online' ];
@@ -106,9 +127,6 @@ class Olama_Reg_Billing_Payment {
             }
             if ( (int) $session->cashier_id !== get_current_user_id() ) {
                 return new \WP_Error( 'cash_session_cashier_mismatch', __( 'Cash receipts must be recorded in your own open cash session.', 'olama-registration' ) );
-            }
-            if ( (string) $session->session_date > $payment_date ) {
-                return new \WP_Error( 'cash_session_date_mismatch', __( 'لا يمكن أن يسبق تاريخ سند القبض تاريخ فتح جلسة الصندوق.', 'olama-registration' ) );
             }
         }
 

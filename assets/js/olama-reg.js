@@ -1598,9 +1598,43 @@
 
     $(document).on('change', '#pay_method', syncPaymentReferenceField);
 
+    function normalizePaymentDateInput() {
+        const $input = $('#pay_date');
+        const raw = $.trim($input.val());
+        const match = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+        if (!match) {
+            return false;
+        }
+
+        const year = parseInt(match[1], 10);
+        const month = parseInt(match[2], 10);
+        const day = parseInt(match[3], 10);
+        const date = new Date(Date.UTC(year, month - 1, day));
+        if (
+            date.getUTCFullYear() !== year
+            || date.getUTCMonth() !== month - 1
+            || date.getUTCDate() !== day
+        ) {
+            return false;
+        }
+
+        $input.val(
+            String(year).padStart(4, '0')
+            + '-' + String(month).padStart(2, '0')
+            + '-' + String(day).padStart(2, '0')
+        );
+        return true;
+    }
+
     $(document).on('submit', '#olama-reg-payment-form', function (e) {
         e.preventDefault();
         const $btn = $('#olama-reg-save-payment-btn');
+        if (!normalizePaymentDateInput()) {
+            showNotice('تاريخ القبض غير صالح. استخدم الصيغة سنة-شهر-يوم.', true);
+            $('#pay_date').trigger('focus');
+            return;
+        }
+
         const method = $('#pay_method').val();
         const reference = $.trim($('#pay_reference').val());
         if (method === 'cheque' && !reference) {
