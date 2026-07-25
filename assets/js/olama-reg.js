@@ -3578,6 +3578,10 @@
                         });
                         $('#os-agr-per-child-total').text(perChild.toFixed(3));
                     }
+                    if (Array.isArray(res.data.schedule)) {
+                        renderAgreementDueSchedule(res.data.schedule);
+                        markAgreementDueScheduleSaved(true);
+                    }
                     // Reload page if amendment was created so user sees it in the log
                     if (data.amendment_reason) {
                         setTimeout(() => window.location.reload(), 1200);
@@ -3620,6 +3624,10 @@
                             perChild += net;
                         });
                         $('#os-agr-per-child-total').text(perChild.toFixed(3));
+                    }
+                    if (Array.isArray(res.data.schedule)) {
+                        renderAgreementDueSchedule(res.data.schedule);
+                        markAgreementDueScheduleSaved(true);
                     }
                 } else {
                     showNotice(res.data?.message || R.strings.error, true);
@@ -3709,8 +3717,14 @@
 
     function updateAgreementDueTotals() {
         let total = 0;
-        $('#os-agr-due-table tbody tr').each(function (idx) {
-            $(this).find('.os-agr-due-no').text(idx + 1);
+        let installmentNo = 0;
+        $('#os-agr-due-table tbody tr').each(function () {
+            if ($(this).hasClass('os-agr-first-payment-row')) {
+                $(this).find('.os-agr-due-no').text('الدفعة الأولى');
+            } else {
+                installmentNo++;
+                $(this).find('.os-agr-due-no').text(installmentNo);
+            }
             total += parseMoney($(this).find('.os-agr-due-amount').val());
         });
 
@@ -3750,12 +3764,14 @@
             const amount = parseMoney(line.amount_due || 0);
             const paid = parseMoney(line.amount_paid || 0);
             const remaining = Math.max(0, amount - paid);
-            const rowLocked = scheduleLocked || paid > 0;
+            const isFirstPayment = line.is_first_payment === true || String(line.is_first_payment) === '1';
+            const rowLocked = scheduleLocked || paid > 0 || isFirstPayment;
             const rowDisabledAttr = rowLocked ? ' disabled' : '';
             const deleteButton = rowLocked ? '' : '<button type="button" class="button button-small os-agr-delete-due" aria-label="حذف القسط"><span class="dashicons dashicons-trash"></span></button>';
+            const displayNo = isFirstPayment ? 'الدفعة الأولى' : (line.display_installment_no || line.installment_no || '');
             $tbody.append(`
-                <tr>
-                    <td class="os-agr-due-no">${line.installment_no || ''}</td>
+                <tr${isFirstPayment ? ' class="os-agr-first-payment-row"' : ''}>
+                    <td class="os-agr-due-no">${displayNo}</td>
                     <td><input type="text" class="os-datepicker os-agr-due-date" value="${line.due_date || ''}" style="width:100%;"${rowDisabledAttr}></td>
                     <td><input type="number" step="0.01" min="0.01" class="os-agr-due-amount" value="${amount.toFixed(2)}" style="width:100%;"${rowDisabledAttr}></td>
                     <td>${paid.toFixed(2)}</td>
@@ -3765,6 +3781,7 @@
                 </tr>
             `);
         });
+        $('#os-agr-due-count-summary').text((schedule || []).filter(line => !(line.is_first_payment === true || String(line.is_first_payment) === '1')).length);
         initDatepickers($tbody);
         updateAgreementDueTotals();
     }

@@ -33,6 +33,11 @@ if ( $_SERVER['REQUEST_METHOD'] === 'POST' && isset( $_POST['olama_reg_settings_
         update_option( 'olama_reg_agreement_natures', array_values( $natures ) );
         update_option( 'olama_reg_agreement_nature_installments', $installment_flags );
     }
+
+    $first_payment_amount = isset( $_POST['agreement_first_payment_amount'] )
+        ? max( 0, round( (float) wp_unslash( $_POST['agreement_first_payment_amount'] ), 2 ) )
+        : 0;
+    update_option( 'olama_reg_agreement_first_payment_amount', $first_payment_amount );
     
     echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'تم حفظ الإعدادات بنجاح.', 'olama-registration' ) . '</p></div>';
 }
@@ -43,6 +48,7 @@ $agreement_nature_installments = get_option( 'olama_reg_agreement_nature_install
 if ( ! is_array( $agreement_nature_installments ) ) {
     $agreement_nature_installments = [];
 }
+$agreement_first_payment_amount = max( 0, (float) get_option( 'olama_reg_agreement_first_payment_amount', 0 ) );
 ?>
 
 <div class="wrap olama-reg-wrap">
@@ -94,6 +100,21 @@ if ( ! is_array( $agreement_nature_installments ) ) {
 
                 <table class="form-table" role="presentation">
                     <tbody>
+                        <tr>
+                            <th scope="row"><label for="agreement-first-payment-amount"><?php esc_html_e( 'قيمة الدفعة الأولى', 'olama-registration' ); ?></label></th>
+                            <td>
+                                <input
+                                    type="number"
+                                    id="agreement-first-payment-amount"
+                                    name="agreement_first_payment_amount"
+                                    value="<?php echo esc_attr( number_format( $agreement_first_payment_amount, 2, '.', '' ) ); ?>"
+                                    min="0"
+                                    step="0.01"
+                                    class="regular-text"
+                                />
+                                <p class="description"><?php esc_html_e( 'تظهر هذه القيمة كبند ثابت مستقل بتاريخ التسجيل، ثم يوزع باقي قيمة العقد على عدد أشهر التوزيع.', 'olama-registration' ); ?></p>
+                            </td>
+                        </tr>
                         <tr>
                             <th scope="row"><label>طبيعة العقد</label></th>
                             <td>

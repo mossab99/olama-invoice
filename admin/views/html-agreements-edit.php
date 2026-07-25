@@ -422,11 +422,9 @@ window.payerChildren = <?php echo $payer_children_json; ?>;
                     </div>
 
                     <div class="olama-reg-field">
-                        <label><?php esc_html_e('تاريخ النهاية', 'olama-registration'); ?> <span style="font-weight:normal; font-size:12px; color:#999;">(اختياري)</span></label>
-                        <input type="text" name="end_date" class="os-datepicker" value="<?php echo esc_attr($agreement->end_date); ?>" style="width:100%;" <?php disabled($has_financial_impact); ?>>
-                        <?php if ($has_financial_impact): ?>
-                            <input type="hidden" name="end_date" value="<?php echo esc_attr($agreement->end_date); ?>">
-                        <?php endif; ?>
+                        <label><?php esc_html_e('تاريخ الاستحقاق', 'olama-registration'); ?></label>
+                        <input type="text" name="end_date" value="<?php echo esc_attr($agreement->end_date); ?>" style="width:100%;" readonly>
+                        <p class="description"><?php esc_html_e('يُقرأ تلقائياً من تاريخ نهاية السنة الدراسية الفعالة في التقويم الأكاديمي.', 'olama-registration'); ?></p>
                     </div>
 
                     <div class="olama-reg-field olama-reg-field--required">
@@ -542,7 +540,7 @@ window.payerChildren = <?php echo $payer_children_json; ?>;
                     <span class="olama-installment-metric__icon"><span class="dashicons dashicons-list-view"></span></span>
                     <div class="olama-installment-metric__body">
                         <span class="olama-installment-metric__label"><?php esc_html_e('عدد الأقساط', 'olama-registration'); ?></span>
-                        <span class="olama-installment-metric__value"><?php echo esc_html(count($due_schedule)); ?></span>
+                        <span class="olama-installment-metric__value" id="os-agr-due-count-summary"><?php echo esc_html(count(array_filter($due_schedule, static fn($line) => empty($line->is_first_payment)))); ?></span>
                     </div>
                 </div>
             </div>
@@ -559,7 +557,7 @@ window.payerChildren = <?php echo $payer_children_json; ?>;
                     </colgroup>
                     <thead>
                         <tr>
-                            <th style="width:90px;"><?php esc_html_e('رقم القسط', 'olama-registration'); ?></th>
+                            <th style="width:110px;"><?php esc_html_e('البند / رقم القسط', 'olama-registration'); ?></th>
                             <th><?php esc_html_e('تاريخ الاستحقاق', 'olama-registration'); ?></th>
                             <th><?php esc_html_e('مبلغ القسط', 'olama-registration'); ?></th>
                             <th><?php esc_html_e('المدفوع', 'olama-registration'); ?></th>
@@ -576,10 +574,11 @@ window.payerChildren = <?php echo $payer_children_json; ?>;
                             $paid = (float) $line->amount_paid;
                             $remaining = max(0, $amount - $paid);
                             $due_table_total += $amount;
-                            $line_locked = !$can_reschedule_installments || $paid > 0;
+                            $is_first_payment = !empty($line->is_first_payment);
+                            $line_locked = !$can_reschedule_installments || $paid > 0 || $is_first_payment;
                             ?>
-                            <tr>
-                                <td class="os-agr-due-no"><?php echo esc_html($line->installment_no); ?></td>
+                            <tr<?php echo $is_first_payment ? ' class="os-agr-first-payment-row"' : ''; ?>>
+                                <td class="os-agr-due-no"><?php echo esc_html($line->display_installment_no ?? $line->installment_no); ?></td>
                                 <td><input type="text" class="os-datepicker os-agr-due-date" value="<?php echo esc_attr($line->due_date); ?>" style="width:100%;" <?php disabled($line_locked); ?>></td>
                                 <td><input type="number" step="0.01" min="0.01" class="os-agr-due-amount" value="<?php echo esc_attr(number_format($amount, 2, '.', '')); ?>" style="width:100%;" <?php disabled($line_locked); ?>></td>
                                 <td><span class="olama-due-paid-badge<?php echo $paid > 0 ? ' olama-due-paid-badge--has-value' : ''; ?>"><?php echo esc_html(number_format($paid, 2)); ?></span></td>
@@ -624,8 +623,8 @@ window.payerChildren = <?php echo $payer_children_json; ?>;
                     <div class="olama-installment-actions__tools">
                         <label class="olama-count-label">
                             <span class="dashicons dashicons-list-view"></span>
-                            <span><?php esc_html_e('عدد الأقساط', 'olama-registration'); ?></span>
-                            <input type="number" id="os-agr-due-count" min="1" max="24" value="<?php echo esc_attr( count( $due_schedule ) ?: Olama_Reg_Agreement_Invoice::DEFAULT_INSTALLMENTS ); ?>" <?php disabled(!$can_reschedule_installments); ?>>
+                            <span><?php esc_html_e('عدد شهور التوزيع', 'olama-registration'); ?></span>
+                            <input type="number" id="os-agr-due-count" min="1" max="8" value="<?php echo esc_attr( min(8, count(array_filter($due_schedule, static fn($line) => empty($line->is_first_payment))) ?: Olama_Reg_Agreement_Invoice::DEFAULT_INSTALLMENTS) ); ?>" <?php disabled(!$can_reschedule_installments); ?>>
                         </label>
                         <button type="button" class="olama-iab olama-iab--ghost" id="os-agr-add-due-row">
                             <span class="dashicons dashicons-plus-alt2"></span>

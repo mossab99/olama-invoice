@@ -382,10 +382,10 @@ HTML;
         $rows = Olama_Reg_Agreement_Invoice::get_due_schedule( $agreement_id );
         $html = '<h3>جدول الدفعات</h3><table><thead><tr><th>الدفعة</th><th>المبلغ</th><th>تاريخ الاستحقاق</th></tr></thead><tbody>';
         $total = 0.0;
-        foreach ( $rows as $index => $row ) {
+        foreach ( $rows as $row ) {
             $amount = round( (float) $row->amount_due, 2 );
             $total = round( $total + $amount, 2 );
-            $html .= '<tr><td>' . ( $index + 1 ) . '</td><td>' . number_format( $amount, 2 ) . ' د.أ</td><td>' . esc_html( $row->due_date ) . '</td></tr>';
+            $html .= '<tr><td>' . esc_html( $row->display_installment_no ?? $row->installment_no ) . '</td><td>' . number_format( $amount, 2 ) . ' د.أ</td><td>' . esc_html( $row->due_date ) . '</td></tr>';
         }
         return $html . '</tbody><tfoot><tr><th>المجموع النهائي</th><th>' .
             number_format( $total, 2 ) .

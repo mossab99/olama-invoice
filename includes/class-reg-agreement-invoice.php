@@ -16,15 +16,70 @@ class Olama_Reg_Agreement_Invoice {
         return $wpdb->prefix . $name;
     }
 
+    public static function get_first_payment_amount( ?object $agreement = null ): float {
+        $amount = max( 0, (float) get_option( 'olama_reg_agreement_first_payment_amount', 0 ) );
+        return round( (float) apply_filters( 'olama_reg_agreement_first_payment_amount', $amount, $agreement ), 2 );
+    }
+
+    public static function calculate_installment_amounts( float $total, int $count, float $first_payment ): array {
+        $total = max( 0, round( $total, 2 ) );
+        $count = min( self::DEFAULT_INSTALLMENTS, max( 1, $count ) );
+        $first_payment = min( $total, max( 0, round( $first_payment, 2 ) ) );
+        $distributed_balance = max( 0, round( $total - $first_payment, 2 ) );
+        $base = round( $distributed_balance / $count, 2 );
+        $amounts = $first_payment > 0 ? [ $first_payment ] : [];
+        $allocated = 0.0;
+
+        for ( $i = 1; $i <= $count; $i++ ) {
+            $monthly_share = ( $i === $count )
+                ? round( $distributed_balance - $allocated, 2 )
+                : $base;
+            $allocated = round( $allocated + $monthly_share, 2 );
+            $amount = round( $monthly_share, 2 );
+
+            if ( $amount > 0 ) {
+                $amounts[] = $amount;
+            }
+        }
+
+        return $amounts;
+    }
+
+    public static function calculate_installment_due_dates( int $school_year, int $count ): array {
+        $count = min( self::DEFAULT_INSTALLMENTS, max( 1, $count ) );
+        $dates = [];
+
+        for ( $index = 0; $index < $count; $index++ ) {
+            $date = new \DateTime( sprintf( '%04d-09-01', $school_year ) );
+            if ( $index > 0 ) {
+                $date->modify( '+' . $index . ' months' );
+            }
+            $date->modify( 'last day of this month' );
+            $dates[] = $date->format( 'Y-m-d' );
+        }
+
+        return $dates;
+    }
+
     public static function get_due_schedule( int $agreement_id ): array {
         global $wpdb;
 
-        return $wpdb->get_results( $wpdb->prepare(
+        $schedule = $wpdb->get_results( $wpdb->prepare(
             "SELECT * FROM " . self::t( 'olama_invoice_installments' ) . "
              WHERE agreement_id = %d
              ORDER BY installment_no ASC, id ASC",
             $agreement_id
         ) ) ?: [];
+
+        $has_first_payment = self::get_first_payment_amount() > 0 && ! empty( $schedule );
+        foreach ( $schedule as $index => $line ) {
+            $line->is_first_payment = $has_first_payment && $index === 0;
+            $line->display_installment_no = $line->is_first_payment
+                ? __( 'الدفعة الأولى', 'olama-registration' )
+                : (int) $line->installment_no - ( $has_first_payment ? 1 : 0 );
+        }
+
+        return $schedule;
     }
 
     public static function save_due_schedule( int $agreement_id, array $lines, int $invoice_id = 0, bool $skip_lock_check = false ): bool|\WP_Error {
@@ -101,6 +156,25 @@ class Olama_Reg_Agreement_Invoice {
             ];
         }
 
+        $fixed_first_payment = min(
+            round( (float) $agreement->total_amount, 2 ),
+            self::get_first_payment_amount( $agreement )
+        );
+        if ( $fixed_first_payment > 0 ) {
+            $registration_date = self::registration_date( $agreement );
+            $fixed_line = [
+                'installment_no' => 1,
+                'due_date'       => $registration_date,
+                'amount_due'     => $fixed_first_payment,
+            ];
+
+            if ( empty( $clean ) ) {
+                $clean[] = $fixed_line;
+            } else {
+                $clean[0] = $fixed_line;
+            }
+        }
+
         if ( empty( $clean ) ) {
             $start = self::sanitize_date( $agreement->start_date ?: current_time( 'Y-m-d' ) );
             $clean[] = [
@@ -162,30 +236,34 @@ class Olama_Reg_Agreement_Invoice {
             $end = $start;
         }
 
-        $start_dt = new \DateTime( $start ?: current_time( 'Y-m-d' ) );
-        $end_dt = new \DateTime( $end );
-        if ( $end_dt < $start_dt ) {
-            $end_dt = clone $start_dt;
+        $registration_dt = new \DateTime( self::registration_date( $agreement ) );
+        $academic_year_id = (int) ( $agreement->academic_year_id ?? 0 );
+        $academic_start = self::sanitize_date( self::get_academic_year_start_date( $academic_year_id ) );
+        $academic_end = self::sanitize_date( self::get_academic_year_end_date( $academic_year_id ) );
+        $school_year = (int) substr( $academic_start ?: $registration_dt->format( 'Y-m-d' ), 0, 4 );
+        if ( $academic_end && (int) substr( $academic_end, 5, 2 ) <= 8 ) {
+            $school_year = (int) substr( $academic_end, 0, 4 ) - 1;
         }
+        $installment_dates = self::calculate_installment_due_dates( $school_year, $count );
 
-        $days_span = max( 0, (int) $start_dt->diff( $end_dt )->days );
-        // Round regular installments to the nearest qirsh (two decimals).
-        // The final installment absorbs the rounding difference.
-        $base = $count > 0 ? round( $total / $count, 2 ) : $total;
+        // The first payment is a separate fixed line. The configured count is
+        // the number of monthly installments that follow it.
+        $first_payment = self::get_first_payment_amount( $agreement );
+        $amounts = self::calculate_installment_amounts(
+            $total,
+            $count,
+            $first_payment
+        );
+        $has_first_payment = min( $total, $first_payment ) > 0;
         $lines = [];
-        $allocated = 0.0;
 
-        for ( $i = 1; $i <= $count; $i++ ) {
-            $date = clone $start_dt;
-            if ( $count > 1 && $days_span > 0 ) {
-                $offset_days = (int) round( ( $days_span * ( $i - 1 ) ) / ( $count - 1 ) );
-                if ( $offset_days > 0 ) {
-                    $date->modify( '+' . $offset_days . ' days' );
-                }
+        foreach ( $amounts as $index => $amount ) {
+            if ( $has_first_payment && $index === 0 ) {
+                $date = clone $registration_dt;
+            } else {
+                $monthly_index = $index - ( $has_first_payment ? 1 : 0 );
+                $date = new \DateTime( $installment_dates[ $monthly_index ] );
             }
-            $amount = ( $i === $count ) ? round( $total - $allocated, 2 ) : $base;
-            $allocated = round( $allocated + $amount, 2 );
-
             $lines[] = [
                 'due_date' => $date->format( 'Y-m-d' ),
                 'amount'   => $amount,
@@ -608,21 +686,31 @@ class Olama_Reg_Agreement_Invoice {
         return Olama_Reg_Agreement::update( $agreement_id, [ 'status' => 'cancelled' ] );
     }
 
-    public static function get_active_academic_year_end_date(): string {
+    public static function get_academic_year_end_date( int $academic_year_id = 0 ): string {
         global $wpdb;
 
-        if ( ! class_exists( 'Olama_School_Academic' ) ) {
-            return '';
+        if ( $academic_year_id > 0 ) {
+            $academic_year = class_exists( 'Olama_School_Academic' ) && method_exists( 'Olama_School_Academic', 'get_year' )
+                ? Olama_School_Academic::get_year( $academic_year_id )
+                : $wpdb->get_row( $wpdb->prepare(
+                    "SELECT * FROM {$wpdb->prefix}olama_academic_years WHERE id = %d LIMIT 1",
+                    $academic_year_id
+                ) );
+        } else {
+            $academic_year = class_exists( 'Olama_School_Academic' )
+                ? Olama_School_Academic::get_active_year()
+                : $wpdb->get_row(
+                    "SELECT * FROM {$wpdb->prefix}olama_academic_years WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+                );
         }
 
-        $active_year = Olama_School_Academic::get_active_year();
-        if ( ! $active_year || empty( $active_year->id ) ) {
+        if ( ! $academic_year || empty( $academic_year->id ) ) {
             return '';
         }
 
         foreach ( [ 'end_date', 'year_end_date', 'date_end' ] as $field ) {
-            if ( ! empty( $active_year->{$field} ) ) {
-                return self::sanitize_date( $active_year->{$field} );
+            if ( ! empty( $academic_year->{$field} ) ) {
+                return self::sanitize_date( $academic_year->{$field} );
             }
         }
 
@@ -631,7 +719,7 @@ class Olama_Reg_Agreement_Invoice {
             if ( in_array( $field, (array) $columns, true ) ) {
                 $date = $wpdb->get_var( $wpdb->prepare(
                     "SELECT {$field} FROM {$wpdb->prefix}olama_academic_years WHERE id = %d",
-                    (int) $active_year->id
+                    (int) $academic_year->id
                 ) );
                 if ( $date ) {
                     return self::sanitize_date( $date );
@@ -642,8 +730,36 @@ class Olama_Reg_Agreement_Invoice {
         return '';
     }
 
+    public static function get_academic_year_start_date( int $academic_year_id = 0 ): string {
+        global $wpdb;
+
+        if ( $academic_year_id > 0 ) {
+            $date = $wpdb->get_var( $wpdb->prepare(
+                "SELECT start_date FROM {$wpdb->prefix}olama_academic_years WHERE id = %d LIMIT 1",
+                $academic_year_id
+            ) );
+        } else {
+            $date = $wpdb->get_var(
+                "SELECT start_date FROM {$wpdb->prefix}olama_academic_years
+                 WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+            );
+        }
+
+        return self::sanitize_date( (string) $date );
+    }
+
+    public static function get_active_academic_year_end_date(): string {
+        return self::get_academic_year_end_date();
+    }
+
     private static function initial_due_status( string $due_date ): string {
         return ( $due_date < current_time( 'Y-m-d' ) ) ? 'overdue' : 'unpaid';
+    }
+
+    private static function registration_date( object $agreement ): string {
+        $created_date = self::sanitize_date( substr( (string) ( $agreement->created_at ?? '' ), 0, 10 ) );
+        $start_date = self::sanitize_date( (string) ( $agreement->start_date ?? '' ) );
+        return $created_date ?: ( $start_date ?: current_time( 'Y-m-d' ) );
     }
 
     private static function sanitize_date( string $val ): string {
