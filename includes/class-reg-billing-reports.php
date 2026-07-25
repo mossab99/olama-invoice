@@ -34,8 +34,7 @@ class Olama_Reg_Billing_Reports {
             COALESCE(SUM(i.total + COALESCE(adj.debit_total, 0) - COALESCE(adj.credit_total, 0)), 0) AS total_invoiced,
             COALESCE(SUM(i.amount_paid), 0) AS total_collected,
             COALESCE(SUM(i.balance), 0) AS total_receivables,
-            COALESCE(SUM(i.discount), 0) AS total_discount,
-            COALESCE(SUM(CASE WHEN i.due_date < CURDATE() AND i.balance > 0 AND i.status NOT IN ('paid', 'draft', 'cancelled') THEN i.balance ELSE 0 END), 0) AS total_overdue
+            COALESCE(SUM(i.discount + COALESCE(fee_discounts.contract_discount, 0)), 0) AS total_discount
             FROM " . self::t( 'olama_invoices' ) . " i
             LEFT JOIN (
                 SELECT invoice_id,
@@ -45,6 +44,14 @@ class Olama_Reg_Billing_Reports {
                 WHERE status = 'issued'
                 GROUP BY invoice_id
             ) adj ON adj.invoice_id = i.id
+            LEFT JOIN (
+                SELECT items.invoice_id,
+                       SUM(COALESCE(fees.discount, 0) * COALESCE(items.quantity, 1)) AS contract_discount
+                FROM " . self::t( 'olama_invoice_items' ) . " items
+                INNER JOIN " . self::t( 'olama_agreement_fees' ) . " fees
+                        ON fees.id = items.agreement_fee_id
+                GROUP BY items.invoice_id
+            ) fee_discounts ON fee_discounts.invoice_id = i.id
             WHERE " . str_replace( [ 'status', 'academic_year_id' ], [ 'i.status', 'i.academic_year_id' ], $where );
 
         if ( ! empty( $params ) ) {
@@ -53,12 +60,14 @@ class Olama_Reg_Billing_Reports {
             $row = $wpdb->get_row( $query );
         }
 
+        $aging = self::get_aging_receivables( $year_id );
+
         return [
             'total_invoiced'    => (float) ( $row->total_invoiced ?? 0 ),
             'total_collected'   => (float) ( $row->total_collected ?? 0 ),
             'total_receivables' => (float) ( $row->total_receivables ?? 0 ),
             'total_discount'    => (float) ( $row->total_discount ?? 0 ),
-            'total_overdue'     => (float) ( $row->total_overdue ?? 0 ),
+            'total_overdue'     => array_sum( $aging ),
         ];
     }
 
@@ -162,21 +171,50 @@ class Olama_Reg_Billing_Reports {
     public static function get_aging_receivables( int $year_id = 0 ): array {
         global $wpdb;
 
+        $today = esc_sql( current_time( 'Y-m-d' ) );
         $params = [];
-        $where = "i.status NOT IN ('paid','draft','cancelled') AND (inst.amount_due - inst.amount_paid) > 0 AND inst.due_date < CURDATE()";
+        $installment_year = '';
+        $invoice_year = '';
         if ( $year_id > 0 ) {
-            $where .= " AND i.academic_year_id = %d";
+            $installment_year = ' AND i.academic_year_id = %d';
+            $invoice_year = ' AND i.academic_year_id = %d';
+            $params[] = $year_id;
             $params[] = $year_id;
         }
 
-        $query = "SELECT 
-            SUM(CASE WHEN DATEDIFF(CURDATE(), inst.due_date) <= 30 THEN (inst.amount_due - inst.amount_paid) ELSE 0 END) AS band_30,
-            SUM(CASE WHEN DATEDIFF(CURDATE(), inst.due_date) BETWEEN 31 AND 60 THEN (inst.amount_due - inst.amount_paid) ELSE 0 END) AS band_60,
-            SUM(CASE WHEN DATEDIFF(CURDATE(), inst.due_date) BETWEEN 61 AND 90 THEN (inst.amount_due - inst.amount_paid) ELSE 0 END) AS band_90,
-            SUM(CASE WHEN DATEDIFF(CURDATE(), inst.due_date) > 90 THEN (inst.amount_due - inst.amount_paid) ELSE 0 END) AS band_90_plus
-            FROM " . self::t( 'olama_invoice_installments' ) . " inst
-            INNER JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = inst.invoice_id
-            WHERE {$where}";
+        $query = "SELECT
+            SUM(CASE WHEN DATEDIFF('{$today}', debt.due_date) BETWEEN 1 AND 30 THEN debt.remaining ELSE 0 END) AS band_30,
+            SUM(CASE WHEN DATEDIFF('{$today}', debt.due_date) BETWEEN 31 AND 60 THEN debt.remaining ELSE 0 END) AS band_60,
+            SUM(CASE WHEN DATEDIFF('{$today}', debt.due_date) BETWEEN 61 AND 90 THEN debt.remaining ELSE 0 END) AS band_90,
+            SUM(CASE WHEN DATEDIFF('{$today}', debt.due_date) > 90 THEN debt.remaining ELSE 0 END) AS band_90_plus
+            FROM (
+                SELECT inst.due_date,
+                       GREATEST(inst.amount_due - inst.amount_paid, 0) AS remaining
+                FROM " . self::t( 'olama_invoice_installments' ) . " inst
+                INNER JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = inst.invoice_id
+                WHERE i.status NOT IN ('paid','draft','cancelled')
+                  AND inst.status != 'cancelled'
+                  AND (inst.amount_due - inst.amount_paid) > 0
+                  AND inst.due_date < '{$today}'
+                  {$installment_year}
+
+                UNION ALL
+
+                SELECT i.due_date,
+                       GREATEST(i.balance, 0) AS remaining
+                FROM " . self::t( 'olama_invoices' ) . " i
+                WHERE i.status NOT IN ('paid','draft','cancelled')
+                  AND i.balance > 0
+                  AND i.due_date IS NOT NULL
+                  AND i.due_date < '{$today}'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM " . self::t( 'olama_invoice_installments' ) . " inst
+                      WHERE inst.invoice_id = i.id
+                        AND inst.status != 'cancelled'
+                  )
+                  {$invoice_year}
+            ) debt";
 
         if ( ! empty( $params ) ) {
             $row = $wpdb->get_row( $wpdb->prepare( $query, ...$params ) );
