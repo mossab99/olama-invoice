@@ -347,7 +347,9 @@ $query = "SELECT i.*, COALESCE(f.sponsor_full_name, f.father_name, f.mother_name
                  s.student_name AS direct_student_name,
                  ec.child_name AS direct_child_name
           FROM " . $wpdb->prefix . "olama_invoices i
-          LEFT JOIN " . $wpdb->prefix . "olama_core_families f ON f.family_uid = i.family_uid OR f.oracle_family_id = i.family_uid
+          LEFT JOIN " . $wpdb->prefix . "olama_core_families f
+            ON f.family_uid = i.family_uid
+            OR (f.oracle_family_id = COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid))
           LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.id = i.ext_customer_id OR c.customer_uid = i.family_uid
           LEFT JOIN " . $wpdb->prefix . "olama_fee_templates ft ON ft.id = i.fee_template_id
           LEFT JOIN " . $wpdb->prefix . "olama_agreements a ON a.id = i.agreement_id

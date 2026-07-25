@@ -3,7 +3,7 @@
  * Plugin Name: Olama Family Billing
  * Plugin URI:  https://olama.online/olama-registration
  * Description: Family-centric billing and invoicing system for Olama School. Family and student data is provided by Olama Core.
- * Version:     2.1.0
+ * Version:     2.2.0
  * Author:      د. مصعب الحنيطي
  * Author URI:  https://olama.online
  * Text Domain: olama-registration
@@ -14,8 +14,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
-define( 'OLAMA_REG_VERSION',             '2.1.0' );
+define( 'OLAMA_REG_VERSION',             '2.2.0' );
 define( 'OLAMA_REG_MIN_SCHOOL_VERSION',  '2.3.9' );
+define( 'OLAMA_REG_MIN_CORE_VERSION',    '0.6.3' );
+define( 'OLAMA_REG_MIN_USERS_VERSION',   '0.6.1' );
 define( 'OLAMA_REG_PATH',               plugin_dir_path( __FILE__ ) );
 define( 'OLAMA_REG_URL',                plugin_dir_url( __FILE__ ) );
 define( 'OLAMA_REG_FILE',               __FILE__ );
@@ -26,11 +28,35 @@ add_action( 'plugins_loaded', 'olama_reg_init', 5 );
 function olama_reg_init() {
 
     // Family and student identity records have a single source of truth.
-    if ( ! function_exists( 'olama_core' ) ) {
+    if (
+        ! function_exists( 'olama_core' )
+        || ! defined( 'OLAMA_CORE_VERSION' )
+        || version_compare( OLAMA_CORE_VERSION, OLAMA_REG_MIN_CORE_VERSION, '<' )
+    ) {
         add_action( 'admin_notices', function () {
             echo '<div class="notice notice-error"><p>'
                 . '<strong>Olama Family Billing:</strong> '
-                . esc_html__( 'Requires Olama Core to provide family and student data.', 'olama-registration' )
+                . sprintf(
+                    esc_html__( 'Requires Olama Core version %s or newer as the exclusive family and student source.', 'olama-registration' ),
+                    esc_html( OLAMA_REG_MIN_CORE_VERSION )
+                )
+                . '</p></div>';
+        } );
+        return;
+    }
+
+    if (
+        ! function_exists( 'olama_users_register_module' )
+        || ! defined( 'OLAMA_USERS_VERSION' )
+        || version_compare( OLAMA_USERS_VERSION, OLAMA_REG_MIN_USERS_VERSION, '<' )
+    ) {
+        add_action( 'admin_notices', function () {
+            echo '<div class="notice notice-error"><p>'
+                . '<strong>Olama Family Billing:</strong> '
+                . sprintf(
+                    esc_html__( 'Requires OLAMA Users version %s or newer for centralized roles and capabilities.', 'olama-registration' ),
+                    esc_html( OLAMA_REG_MIN_USERS_VERSION )
+                )
                 . '</p></div>';
         } );
         return;
@@ -65,6 +91,7 @@ function olama_reg_init() {
     require_once OLAMA_REG_PATH . 'includes/class-reg-status-labels.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-id-generator.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-activator.php';
+    require_once OLAMA_REG_PATH . 'includes/class-reg-access.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-academic-year-context.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-core-gateway.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-family.php';
@@ -97,6 +124,11 @@ function olama_reg_init() {
     require_once OLAMA_REG_PATH . 'includes/class-reg-receipt-repair.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-settlement.php';
     require_once OLAMA_REG_PATH . 'includes/class-reg-family-financial-summary.php';
+
+    add_action(
+        'olama_users_register_modules',
+        [ 'Olama_Reg_Access', 'register_with_olama_users' ]
+    );
 
     // ── Load admin ───────────────────────────────────────────────────────────
     if ( is_admin() ) {

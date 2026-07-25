@@ -351,10 +351,25 @@ class Olama_Reg_Billing_Invoice
 
         $payload = [];
 
-        if (isset($data['family_uid']))
-            $payload['family_uid'] = sanitize_text_field($data['family_uid']) ?: null;
-        if (isset($data['student_uid']))
-            $payload['student_uid'] = sanitize_text_field($data['student_uid']) ?: null;
+        if ( isset( $data['family_uid'] ) || isset( $data['student_uid'] ) ) {
+            $identity_input = array_merge( (array) $before, $data );
+            $identity = self::resolve_identity( $identity_input );
+            if ( is_wp_error( $identity ) ) {
+                return $identity;
+            }
+
+            foreach ( [
+                'family_uid',
+                'oracle_family_id',
+                'student_uid',
+                'oracle_student_id',
+                'payer_name_snapshot',
+                'student_name_snapshot',
+                'grade_name_snapshot',
+            ] as $identity_key ) {
+                $payload[ $identity_key ] = $identity[ $identity_key ];
+            }
+        }
         if (isset($data['fee_template_id']))
             $payload['fee_template_id'] = absint($data['fee_template_id']) ?: null;
         if (isset($data['ext_customer_id']))

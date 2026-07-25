@@ -61,7 +61,7 @@ class Olama_Reg_Admin {
             'olama-registration',
             __( 'Agreements', 'olama-registration' ),
             __( 'العقود', 'olama-registration' ),
-            'manage_options',
+            'olama_manage_registration_agreements',
             'olama-registration-agreements',
             [ $this, 'render_agreements' ]
         );
@@ -184,7 +184,7 @@ class Olama_Reg_Admin {
     }
 
     public function render_agreements(): void {
-        if ( ! current_user_can( 'manage_options' ) ) wp_die( __( 'Unauthorized', 'olama-registration' ) );
+        if ( ! current_user_can( 'olama_manage_registration_agreements' ) && ! current_user_can( 'manage_options' ) ) wp_die( __( 'Unauthorized', 'olama-registration' ) );
         
         $tab = sanitize_text_field( $_GET['tab'] ?? 'agreements' );
         
@@ -395,7 +395,7 @@ class Olama_Reg_Admin {
         $action = sanitize_text_field( $_GET['action'] );
 
         if ( $page === 'olama-registration-agreements' && $action === 'cancel' ) {
-            if ( ! current_user_can( 'manage_options' ) ) {
+            if ( ! current_user_can( 'olama_cancel_financial_agreement' ) && ! current_user_can( 'manage_options' ) ) {
                 wp_die( __( 'Unauthorized', 'olama-registration' ) );
             }
             $id = (int) ( $_GET['id'] ?? 0 );
@@ -459,7 +459,7 @@ class Olama_Reg_Admin {
         }
 
         if ( $page === 'olama-registration-agreements' && $action === 'print' ) {
-            if ( ! current_user_can( 'manage_options' ) ) {
+            if ( ! current_user_can( 'olama_manage_registration_agreements' ) && ! current_user_can( 'manage_options' ) ) {
                 wp_die( __( 'Unauthorized', 'olama-registration' ) );
             }
             include OLAMA_REG_PATH . 'admin/views/html-agreements-print.php';

@@ -12,7 +12,18 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Olama_Reg_Core_Gateway {
 
     public static function available(): bool {
-        return function_exists( 'olama_core' );
+        if ( ! function_exists( 'olama_core' ) ) {
+            return false;
+        }
+
+        $core = olama_core();
+        foreach ( [ 'families', 'students', 'knowledge', 'financial', 'transportation' ] as $service ) {
+            if ( ! is_object( $core ) || ! method_exists( $core, $service ) ) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public static function family( string $reference ): ?object {
@@ -48,21 +59,11 @@ class Olama_Reg_Core_Gateway {
     }
 
     public static function student( string $student_uid ): ?object {
-        global $wpdb;
-
         if ( ! self::available() || $student_uid === '' ) {
             return null;
         }
 
         $row = olama_core()->students()->get_by_uid( $student_uid );
-        if ( ! $row ) {
-            $row = $wpdb->get_row( $wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}olama_core_students
-                 WHERE oracle_student_id = %s
-                 LIMIT 1",
-                $student_uid
-            ), ARRAY_A );
-        }
 
         return $row ? self::student_object( $row ) : null;
     }

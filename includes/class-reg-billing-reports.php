@@ -327,8 +327,18 @@ class Olama_Reg_Billing_Reports {
                 u.display_name AS received_by_name
             FROM " . self::t( 'olama_payments' ) . " p
             LEFT JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = p.invoice_id
-            LEFT JOIN " . self::t( 'olama_core_students' ) . " s ON s.student_uid = i.student_uid OR s.oracle_student_id = i.student_uid
-            LEFT JOIN " . self::t( 'olama_core_families' ) . " f ON f.family_uid = p.family_uid OR f.oracle_family_id = p.family_uid
+            LEFT JOIN " . self::t( 'olama_core_students' ) . " s
+                ON s.student_uid = i.student_uid
+                OR (
+                    s.oracle_student_id = COALESCE(NULLIF(i.oracle_student_id, ''), i.student_uid)
+                    AND (
+                        s.family_uid = i.family_uid
+                        OR s.oracle_family_id = COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid)
+                    )
+                )
+            LEFT JOIN " . self::t( 'olama_core_families' ) . " f
+                ON f.family_uid = p.family_uid
+                OR f.oracle_family_id = COALESCE(NULLIF(p.oracle_family_id, ''), p.family_uid)
             LEFT JOIN " . self::t( 'olama_customers' ) . " c ON c.customer_uid = p.family_uid
             LEFT JOIN " . self::t( 'olama_customer_children' ) . " ec ON ec.id = i.ext_child_id
             LEFT JOIN " . self::t( 'olama_cash_sessions' ) . " cs ON cs.id = p.cash_session_id

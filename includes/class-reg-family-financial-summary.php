@@ -87,7 +87,14 @@ class Olama_Reg_Family_Financial_Summary {
             "SELECT DISTINCT ap.student_uid, s.student_name
              FROM {$wpdb->prefix}olama_agreement_participants ap
              LEFT JOIN {$wpdb->prefix}olama_core_students s
-                ON s.student_uid = ap.student_uid OR s.oracle_student_id = ap.student_uid
+                ON s.student_uid = ap.student_uid
+                OR (
+                    s.oracle_student_id = COALESCE(NULLIF(ap.oracle_student_id, ''), ap.student_uid)
+                    AND (
+                        s.family_uid = ap.family_uid
+                        OR s.oracle_family_id = COALESCE(NULLIF(ap.oracle_family_id, ''), ap.family_uid)
+                    )
+                )
              WHERE ap.family_uid = %s AND ap.participant_type = 'student' AND ap.student_uid IS NOT NULL AND ap.student_uid != ''",
             $family_uid
         ) ) ?: [];
@@ -266,7 +273,14 @@ class Olama_Reg_Family_Financial_Summary {
                 "SELECT DISTINCT COALESCE(s.student_name, ap.student_uid)
                  FROM {$wpdb->prefix}olama_agreement_participants ap
                  LEFT JOIN {$wpdb->prefix}olama_core_students s
-                    ON s.student_uid = ap.student_uid OR s.oracle_student_id = ap.student_uid
+                    ON s.student_uid = ap.student_uid
+                    OR (
+                        s.oracle_student_id = COALESCE(NULLIF(ap.oracle_student_id, ''), ap.student_uid)
+                        AND (
+                            s.family_uid = ap.family_uid
+                            OR s.oracle_family_id = COALESCE(NULLIF(ap.oracle_family_id, ''), ap.family_uid)
+                        )
+                    )
                  WHERE ap.agreement_id = %d AND ap.participant_type = 'student'",
                 $agr->agreement_id
             ) ) ?: [];

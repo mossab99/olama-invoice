@@ -61,6 +61,9 @@ class Olama_Reg_Ajax
             'olama_reg_agr_get_participants',
             'olama_reg_agr_save_fee',
             'olama_reg_agr_delete_fee',
+            'olama_reg_agr_add_clause',
+            'olama_reg_agr_save_clause',
+            'olama_reg_agr_delete_clause',
             'olama_reg_agr_save_due_schedule',
             'olama_reg_agr_generate_due_schedule',
             'olama_reg_agr_create_amendment',
@@ -96,30 +99,71 @@ class Olama_Reg_Ajax
     private function guard(): void
     {
         check_ajax_referer('olama_reg_nonce', 'nonce');
-        
-        $caps = [
-            'olama_manage_registration_families',
-            'olama_manage_registration_students',
-            'olama_manage_registration_fees',
-            'olama_manage_registration_invoices',
-            'olama_manage_registration_payments',
-            'olama_manage_registration_reports',
-            'olama_record_payments',
-            'olama_reverse_payments',
-            'olama_confirm_bank_payments',
-            'olama_manage_cheques',
-            'olama_view_cash_reports',
-            'olama_manage_financial_accounts',
-            'olama_edit_agreement_admin_fields',
-            'olama_create_agreement_amendment',
-            'olama_approve_agreement_amendment',
-            'olama_post_agreement_amendment',
-            'olama_reschedule_agreement_installments',
-            'olama_cancel_financial_agreement',
-            'olama_view_agreement_audit',
+
+        $action = sanitize_key( wp_unslash( $_REQUEST['action'] ?? '' ) );
+        $capabilities_by_action = [
+            'olama_reg_get_family'                    => [ 'olama_manage_registration_families', 'olama_manage_registration_invoices', 'olama_manage_registration_payments', 'olama_manage_registration_reports', 'olama_manage_registration_agreements' ],
+            'olama_reg_get_student'                   => [ 'olama_manage_registration_students', 'olama_manage_registration_families', 'olama_manage_registration_invoices', 'olama_manage_registration_agreements' ],
+            'olama_reg_search'                        => [ 'olama_manage_registration_families', 'olama_manage_registration_students' ],
+            'olama_reg_get_family_students'           => [ 'olama_manage_registration_families', 'olama_manage_registration_students', 'olama_manage_registration_invoices', 'olama_manage_registration_agreements' ],
+            'olama_reg_search_external_customers'     => [ 'olama_manage_registration_families', 'olama_manage_registration_invoices', 'olama_manage_registration_payments', 'olama_manage_registration_agreements' ],
+            'olama_reg_get_external_customer'         => [ 'olama_manage_registration_families', 'olama_manage_registration_invoices', 'olama_manage_registration_payments', 'olama_manage_registration_agreements' ],
+            'olama_reg_get_external_customer_children'=> [ 'olama_manage_registration_families', 'olama_manage_registration_invoices', 'olama_manage_registration_agreements' ],
+            'olama_reg_add_external_customer'         => [ 'olama_manage_registration_families' ],
+            'olama_reg_update_external_customer'      => [ 'olama_manage_registration_families' ],
+            'olama_reg_delete_external_customer'      => [ 'olama_manage_registration_families' ],
+            'olama_reg_add_child_to_customer'         => [ 'olama_manage_registration_families' ],
+            'olama_reg_update_child'                  => [ 'olama_manage_registration_families' ],
+            'olama_reg_delete_child'                  => [ 'olama_manage_registration_families' ],
+            'olama_reg_save_financial_row'            => [ 'olama_manage_registration_invoices' ],
+            'olama_reg_delete_financial_row'          => [ 'olama_manage_registration_invoices' ],
+            'olama_reg_get_financial'                 => [ 'olama_manage_registration_invoices', 'olama_manage_registration_reports' ],
+            'olama_reg_save_fee_template'             => [ 'olama_manage_registration_fees' ],
+            'olama_reg_delete_fee_template'           => [ 'olama_manage_registration_fees' ],
+            'olama_reg_create_invoice'                => [ 'olama_manage_registration_invoices' ],
+            'olama_reg_update_invoice'                => [ 'olama_manage_registration_invoices' ],
+            'olama_reg_get_invoice'                   => [ 'olama_manage_registration_invoices', 'olama_manage_registration_payments', 'olama_manage_registration_reports' ],
+            'olama_reg_cancel_invoice'                => [ 'olama_manage_registration_invoices' ],
+            'olama_reg_create_invoice_adjustment'     => [ 'olama_manage_registration_invoices' ],
+            'olama_reg_cancel_invoice_adjustment'     => [ 'olama_manage_registration_invoices' ],
+            'olama_reg_get_invoice_activity'          => [ 'olama_manage_registration_invoices', 'olama_manage_registration_reports' ],
+            'olama_reg_record_payment'                => [ 'olama_record_payments' ],
+            'olama_reg_reverse_payment'               => [ 'olama_reverse_payments' ],
+            'olama_reg_confirm_payment'               => [ 'olama_confirm_bank_payments' ],
+            'olama_reg_reject_payment'                => [ 'olama_confirm_bank_payments' ],
+            'olama_reg_update_cheque_status'          => [ 'olama_manage_cheques' ],
+            'olama_reg_get_receipt'                   => [ 'olama_manage_registration_payments', 'olama_manage_registration_reports' ],
+            'olama_reg_get_family_billing'            => [ 'olama_manage_registration_invoices', 'olama_manage_registration_payments', 'olama_manage_registration_reports' ],
+            'olama_reg_save_custom_payment'           => [ 'olama_record_payments' ],
+            'olama_reg_create_settlement'             => [ 'olama_record_payments' ],
+            'olama_reg_settle_receipt'                => [ 'olama_record_payments' ],
+            'olama_reg_cancel_settlement'             => [ 'olama_reverse_payments' ],
+            'olama_reg_agr_save_header'               => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_get_details'               => [ 'olama_manage_registration_agreements', 'olama_view_agreement_audit' ],
+            'olama_reg_agr_search_payer'               => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_get_participants'           => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_save_fee'                  => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_delete_fee'                => [ 'olama_manage_registration_agreements', 'olama_cancel_financial_agreement' ],
+            'olama_reg_agr_add_clause'                => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_save_clause'               => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_delete_clause'             => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_save_due_schedule'         => [ 'olama_manage_registration_agreements', 'olama_reschedule_agreement_installments' ],
+            'olama_reg_agr_generate_due_schedule'     => [ 'olama_manage_registration_agreements', 'olama_reschedule_agreement_installments' ],
+            'olama_reg_agr_create_amendment'          => [ 'olama_create_agreement_amendment' ],
+            'olama_reg_agr_approve_amendment'         => [ 'olama_approve_agreement_amendment' ],
+            'olama_reg_agr_reject_amendment'          => [ 'olama_approve_agreement_amendment' ],
+            'olama_reg_agr_cancel_amendment'          => [ 'olama_cancel_financial_agreement' ],
+            'olama_reg_agr_post_amendment'            => [ 'olama_post_agreement_amendment' ],
+            'olama_reg_agr_get_amendments'            => [ 'olama_view_agreement_audit', 'olama_create_agreement_amendment' ],
+            'olama_reg_agr_preview_amendment'         => [ 'olama_create_agreement_amendment' ],
+            'olama_reg_agr_complete'                  => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_generate_invoice'          => [ 'olama_manage_registration_agreements' ],
+            'olama_reg_agr_get_unpaid_fees'           => [ 'olama_manage_registration_agreements', 'olama_manage_registration_invoices' ],
+            'olama_reg_reset_system'                  => [ 'manage_options' ],
         ];
 
-        if (!Olama_Reg_Payment_Policy::current_user_can_any($caps)) {
+        $required = $capabilities_by_action[ $action ] ?? [];
+        if ( ! $required || ! Olama_Reg_Access::can_any( $required ) ) {
             wp_send_json_error(['message' => __('Unauthorized.', 'olama-registration')], 403);
         }
     }
@@ -645,7 +689,7 @@ class Olama_Reg_Ajax
     public function ajax_record_payment(): void
     {
         $this->guard();
-        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_record_payments', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_record_payments' ] ) ) {
             wp_send_json_error(['message' => __('Unauthorized.', 'olama-registration')], 403);
         }
         $result = Olama_Reg_Billing_Payment::record($_POST);
@@ -663,7 +707,7 @@ class Olama_Reg_Ajax
     public function ajax_reverse_payment(): void
     {
         $this->guard();
-        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_reverse_payments', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_reverse_payments' ] ) ) {
             wp_send_json_error(['message' => __('Unauthorized.', 'olama-registration')], 403);
         }
         $id = (int) ($_POST['id'] ?? 0);
@@ -683,7 +727,7 @@ class Olama_Reg_Ajax
     public function ajax_confirm_payment(): void
     {
         $this->guard();
-        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_confirm_bank_payments', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_confirm_bank_payments' ] ) ) {
             wp_send_json_error(['message' => __('Unauthorized.', 'olama-registration')], 403);
         }
         $id = (int) ($_POST['id'] ?? 0);
@@ -700,7 +744,7 @@ class Olama_Reg_Ajax
     public function ajax_reject_payment(): void
     {
         $this->guard();
-        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_confirm_bank_payments', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_confirm_bank_payments' ] ) ) {
             wp_send_json_error(['message' => __('Unauthorized.', 'olama-registration')], 403);
         }
         $id = (int) ($_POST['id'] ?? 0);
@@ -717,7 +761,7 @@ class Olama_Reg_Ajax
     public function ajax_update_cheque_status(): void
     {
         $this->guard();
-        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_manage_cheques', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! Olama_Reg_Payment_Policy::current_user_can_any( [ 'olama_manage_cheques' ] ) ) {
             wp_send_json_error(['message' => __('Unauthorized.', 'olama-registration')], 403);
         }
 
@@ -1421,6 +1465,9 @@ class Olama_Reg_Ajax
         $id = (int) ($_POST['id'] ?? 0);
         $agreement_id = (int) ($_POST['agreement_id'] ?? 0);
         $is_fee_amendment = !empty($_POST['amendment_reason']) && $id === 0;
+        if ( $is_fee_amendment && ! Olama_Reg_Access::can_any( [ 'olama_create_agreement_amendment' ] ) ) {
+            wp_send_json_error( [ 'message' => __( 'Unauthorized.', 'olama-registration' ) ], 403 );
+        }
 
         if ($id > 0) {
             $existing_fee = Olama_Reg_Agreement_Fees::get($id);
@@ -1555,6 +1602,14 @@ class Olama_Reg_Ajax
             wp_send_json_error(['message' => __('بيانات غير صالحة.', 'olama-registration')]);
         }
 
+        if (
+            class_exists( 'Olama_Reg_Agreement_Policy' )
+            && Olama_Reg_Agreement_Policy::is_financially_locked( $agreement_id )
+            && ! Olama_Reg_Access::can_any( [ 'olama_cancel_financial_agreement' ] )
+        ) {
+            wp_send_json_error( [ 'message' => __( 'Unauthorized.', 'olama-registration' ) ], 403 );
+        }
+
         $args = [
             'reason'         => sanitize_text_field($_POST['reason'] ?? ''),
             'effective_date' => sanitize_text_field($_POST['effective_date'] ?? ''),
@@ -1644,6 +1699,12 @@ class Olama_Reg_Ajax
         $this->guard();
         $agreement_id = (int) ($_POST['agreement_id'] ?? 0);
         $is_amendment_reschedule = !empty($_POST['amendment_reason']);
+        if (
+            $is_amendment_reschedule
+            && ! Olama_Reg_Access::can_any( [ 'olama_reschedule_agreement_installments' ] )
+        ) {
+            wp_send_json_error( [ 'message' => __( 'Unauthorized.', 'olama-registration' ) ], 403 );
+        }
         $agreement = Olama_Reg_Agreement::get($agreement_id);
         if (!$is_amendment_reschedule && $agreement && $agreement->status === 'completed' && class_exists('Olama_Reg_Agreement_Policy') && Olama_Reg_Agreement_Policy::is_financially_locked($agreement_id)) {
             wp_send_json_error(['message' => __('لا يمكن إعادة إكمال عقد مقفل مالياً. استخدم مسار تعديل العقد.', 'olama-registration')]);
@@ -1676,6 +1737,12 @@ class Olama_Reg_Ajax
         $this->guard();
         $agreement_id = (int) ($_POST['agreement_id'] ?? 0);
         $is_amendment_reschedule = !empty($_POST['amendment_reason']);
+        if (
+            $is_amendment_reschedule
+            && ! Olama_Reg_Access::can_any( [ 'olama_reschedule_agreement_installments' ] )
+        ) {
+            wp_send_json_error( [ 'message' => __( 'Unauthorized.', 'olama-registration' ) ], 403 );
+        }
         $count = max(1, absint($_POST['count'] ?? 0));
 
         if (!$is_amendment_reschedule && $agreement_id > 0 && class_exists('Olama_Reg_Agreement_Policy')) {
@@ -1884,9 +1951,6 @@ class Olama_Reg_Ajax
     private function hub_guard(): void
     {
         check_ajax_referer('os_hub_nonce', 'nonce');
-        if (! $this->hub_user_can(['olama_manage_registration_families'])) {
-            wp_send_json_error(['message' => __('Unauthorized.', 'olama-registration')], 403);
-        }
     }
 
     private function hub_user_can(array $caps): bool
@@ -1937,8 +2001,7 @@ class Olama_Reg_Ajax
         }
 
         $this->hub_require_caps([
-            'olama_manage_registration_invoices',
-            'olama_manage_registration_fees',
+            'olama_manage_registration_agreements',
         ]);
 
         if ($id <= 0 && $uid === '') {
@@ -2010,6 +2073,7 @@ class Olama_Reg_Ajax
     public function hub_search(): void
     {
         $this->hub_guard();
+        $this->hub_require_caps( [ 'olama_manage_registration_families' ] );
 
         $query = sanitize_text_field($_POST['q'] ?? '');
         $type  = sanitize_key($_POST['type'] ?? 'family');
@@ -2071,6 +2135,7 @@ class Olama_Reg_Ajax
     public function hub_counts(): void
     {
         $this->hub_guard();
+        $this->hub_require_caps( [ 'olama_manage_registration_families' ] );
 
         $uid  = sanitize_text_field($_POST['uid']  ?? '');
         $type = sanitize_key($_POST['type'] ?? 'family');
@@ -2398,7 +2463,7 @@ class Olama_Reg_Ajax
 
         $tile_caps = [
             'profile'     => ['olama_manage_registration_families'],
-            'agreements'  => ['manage_options'],
+            'agreements'  => ['olama_manage_registration_agreements'],
             'invoices'    => ['olama_manage_registration_invoices'],
             'payments'    => ['olama_manage_registration_payments', 'olama_record_payments', 'olama_reverse_payments'],
             'children'    => ['olama_manage_registration_families', 'olama_manage_registration_students'],
@@ -3756,7 +3821,9 @@ class Olama_Reg_Ajax
                     COALESCE(NULLIF(f.sponsor_full_name, ''), NULLIF(f.father_name, ''), r.family_id) AS father_first_name,
                     '' AS father_family_name
              FROM {$wpdb->prefix}olama_settlement_receipts r
-             LEFT JOIN {$wpdb->prefix}olama_core_families f ON f.oracle_family_id = r.family_id
+             LEFT JOIN {$wpdb->prefix}olama_core_families f
+                ON f.family_uid = COALESCE(NULLIF(r.family_uid, ''), r.family_id)
+                OR f.oracle_family_id = COALESCE(NULLIF(r.oracle_family_id, ''), r.family_id)
              WHERE r.family_id = %s {$yc}
              ORDER BY r.id DESC
              LIMIT 50",
@@ -3905,65 +3972,6 @@ class Olama_Reg_Ajax
                 'olama-registration'
             ),
         ]);
-
-        global $wpdb;
-
-        $family_uid    = sanitize_text_field($_POST['family_uid'] ?? '');
-        $family_name   = sanitize_text_field($_POST['family_name'] ?? '');
-        $father_mobile = sanitize_text_field($_POST['father_mobile'] ?? '');
-        $mother_mobile = sanitize_text_field($_POST['mother_mobile'] ?? '');
-        $address       = sanitize_textarea_field($_POST['address'] ?? '');
-
-        if ($family_name === '') {
-            wp_send_json_error(['message' => __('اسم العائلة مطلوب.', 'olama-registration')]);
-        }
-
-        if ($family_uid === '') {
-            $family_uid = (string) ((int) $wpdb->get_var(
-                "SELECT COALESCE(MAX(CAST(family_uid AS UNSIGNED)), 0) + 1 FROM {$wpdb->prefix}olama_families WHERE family_uid REGEXP '^[0-9]+$'"
-            ));
-        }
-
-        if ($family_uid === '' || ! preg_match('/^[A-Za-z0-9_-]+$/', $family_uid)) {
-            wp_send_json_error(['message' => __('رقم العائلة غير صالح.', 'olama-registration')]);
-        }
-
-        $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM {$wpdb->prefix}olama_families WHERE family_uid = %s LIMIT 1",
-            $family_uid
-        ));
-        if ($exists) {
-            wp_send_json_error(['message' => __('رقم العائلة موجود مسبقاً.', 'olama-registration')]);
-        }
-
-        $inserted = $wpdb->insert(
-            $wpdb->prefix . 'olama_families',
-            [
-                'family_uid'    => $family_uid,
-                'family_name'   => $family_name,
-                'father_mobile' => $father_mobile,
-                'mother_mobile' => $mother_mobile,
-                'address'       => $address,
-            ],
-            ['%s', '%s', '%s', '%s', '%s']
-        );
-
-        if (! $inserted) {
-            wp_send_json_error(['message' => __('حدث خطأ أثناء حفظ العائلة.', 'olama-registration') . ' ' . $wpdb->last_error]);
-        }
-
-        wp_send_json_success([
-            'message' => __('تمت إضافة العائلة بنجاح.', 'olama-registration'),
-            'family_uid' => $family_uid,
-            'customer' => [
-                'uid'       => $family_uid,
-                'name'      => $family_name,
-                'phone'     => $father_mobile ?: $mother_mobile,
-                'type'      => 'family',
-                'is_active' => 1,
-                'count'     => 0,
-            ],
-        ]);
     }
 
     /**
@@ -3994,70 +4002,40 @@ class Olama_Reg_Ajax
 
         global $wpdb;
 
-        if ($type === 'family') {
-            $data = [
-                'family_name'   => sanitize_text_field($_POST['family_name']   ?? ''),
-                'father_mobile' => sanitize_text_field($_POST['father_mobile'] ?? ''),
-                'mother_mobile' => sanitize_text_field($_POST['mother_mobile'] ?? ''),
-                'address'       => sanitize_text_field($_POST['address']       ?? ''),
-            ];
+        // External customer — resolve by UID. School family data is read-only.
+        $customer = $wpdb->get_row($wpdb->prepare(
+            "SELECT id FROM {$wpdb->prefix}olama_customers WHERE customer_uid = %s LIMIT 1",
+            $uid
+        ));
 
-            if (empty($data['family_name'])) {
-                wp_send_json_error(['message' => __('اسم العائلة مطلوب.', 'olama-registration')]);
-            }
-
-            $updated = $wpdb->update(
-                $wpdb->prefix . 'olama_families',
-                $data,
-                ['family_uid' => $uid]
-            );
-
-            if ($updated === false) {
-                wp_send_json_error(['message' => __('حدث خطأ أثناء الحفظ.', 'olama-registration')]);
-            }
-
-            $row = Olama_Reg_Family::get_family($uid);
-            wp_send_json_success([
-                'message' => __('تم تحديث بيانات العائلة.', 'olama-registration'),
-                'name'    => $row ? $row->family_name : $data['family_name'],
-            ]);
-
-        } else {
-            // External customer — resolve by UID
-            $customer = $wpdb->get_row($wpdb->prepare(
-                "SELECT id FROM {$wpdb->prefix}olama_customers WHERE customer_uid = %s LIMIT 1",
-                $uid
-            ));
-
-            if (! $customer) {
-                wp_send_json_error(['message' => __('العميل غير موجود.', 'olama-registration')]);
-            }
-
-            $data = [
-                'customer_name' => sanitize_text_field($_POST['customer_name'] ?? ''),
-                'phone'         => sanitize_text_field($_POST['phone']         ?? ''),
-                'notes'         => sanitize_textarea_field($_POST['notes']     ?? ''),
-            ];
-
-            if (empty($data['customer_name'])) {
-                wp_send_json_error(['message' => __('اسم العميل مطلوب.', 'olama-registration')]);
-            }
-
-            $updated = $wpdb->update(
-                $wpdb->prefix . 'olama_customers',
-                $data,
-                ['id' => $customer->id]
-            );
-
-            if ($updated === false) {
-                wp_send_json_error(['message' => __('حدث خطأ أثناء الحفظ.', 'olama-registration')]);
-            }
-
-            wp_send_json_success([
-                'message' => __('تم تحديث بيانات العميل.', 'olama-registration'),
-                'name'    => $data['customer_name'],
-            ]);
+        if (! $customer) {
+            wp_send_json_error(['message' => __('العميل غير موجود.', 'olama-registration')]);
         }
+
+        $data = [
+            'customer_name' => sanitize_text_field($_POST['customer_name'] ?? ''),
+            'phone'         => sanitize_text_field($_POST['phone']         ?? ''),
+            'notes'         => sanitize_textarea_field($_POST['notes']     ?? ''),
+        ];
+
+        if (empty($data['customer_name'])) {
+            wp_send_json_error(['message' => __('اسم العميل مطلوب.', 'olama-registration')]);
+        }
+
+        $updated = $wpdb->update(
+            $wpdb->prefix . 'olama_customers',
+            $data,
+            ['id' => $customer->id]
+        );
+
+        if ($updated === false) {
+            wp_send_json_error(['message' => __('حدث خطأ أثناء الحفظ.', 'olama-registration')]);
+        }
+
+        wp_send_json_success([
+            'message' => __('تم تحديث بيانات العميل.', 'olama-registration'),
+            'name'    => $data['customer_name'],
+        ]);
     }
 
     /**
@@ -4089,24 +4067,16 @@ class Olama_Reg_Ajax
 
         global $wpdb;
 
-        if ($type === 'family') {
-            $updated = $wpdb->update(
-                $wpdb->prefix . 'olama_families',
-                ['is_active' => $active],
-                ['family_uid' => $uid]
-            );
-        } else {
-            $customer = $wpdb->get_row($wpdb->prepare(
-                "SELECT id FROM {$wpdb->prefix}olama_customers WHERE customer_uid = %s LIMIT 1",
-                $uid
-            ));
+        $customer = $wpdb->get_row($wpdb->prepare(
+            "SELECT id FROM {$wpdb->prefix}olama_customers WHERE customer_uid = %s LIMIT 1",
+            $uid
+        ));
 
-            $updated = $customer ? $wpdb->update(
-                $wpdb->prefix . 'olama_customers',
-                ['is_active' => $active],
-                ['id' => $customer->id]
-            ) : false;
-        }
+        $updated = $customer ? $wpdb->update(
+            $wpdb->prefix . 'olama_customers',
+            ['is_active' => $active],
+            ['id' => $customer->id]
+        ) : false;
 
         if ($updated === false) {
             wp_send_json_error(['message' => __('حدث خطأ أثناء تغيير الحالة.', 'olama-registration')]);

@@ -569,12 +569,15 @@ class Olama_Reg_Agreement {
             $participant_ids = is_array( $data['participant_ids'] ?? null )
                 ? $data['participant_ids']
                 : [];
+            $canonical_participant_ids = [];
             foreach ( $participant_ids as $student_uid ) {
                 $student = Olama_Reg_Core_Gateway::student( sanitize_text_field( $student_uid ) );
                 if ( ! $student || $student->family_uid !== $family->family_uid ) {
                     return false;
                 }
+                $canonical_participant_ids[] = $student->student_uid;
             }
+            $data['participant_ids'] = array_values( array_unique( $canonical_participant_ids ) );
         } else {
             $reference = $data['customer_id'] ?? $data['payer_ref'] ?? $data['payer_id'] ?? '';
             $customer = is_numeric( $reference )

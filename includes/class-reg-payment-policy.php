@@ -8,7 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Olama_Reg_Payment_Policy {
 
     public static function can_create_payment( object $invoice, string $method = 'cash', ?int $account_id = null ): true|\WP_Error {
-        if ( ! self::current_user_can_any( [ 'olama_record_payments', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! self::current_user_can_any( [ 'olama_record_payments' ] ) ) {
             return new \WP_Error( 'unauthorized_payment_action', __( 'You are not allowed to record payments.', 'olama-registration' ) );
         }
 
@@ -66,7 +66,7 @@ class Olama_Reg_Payment_Policy {
     }
 
     public static function can_reverse_payment( object $payment ): true|\WP_Error {
-        if ( ! self::current_user_can_any( [ 'olama_reverse_payments', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! self::current_user_can_any( [ 'olama_reverse_payments' ] ) ) {
             return new \WP_Error( 'unauthorized_payment_action', __( 'You are not allowed to reverse receipts.', 'olama-registration' ) );
         }
 
@@ -87,7 +87,7 @@ class Olama_Reg_Payment_Policy {
     }
 
     public static function can_confirm_payment( object $payment ): true|\WP_Error {
-        if ( ! self::current_user_can_any( [ 'olama_confirm_bank_payments', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! self::current_user_can_any( [ 'olama_confirm_bank_payments' ] ) ) {
             return new \WP_Error( 'unauthorized_payment_action', __( 'You are not allowed to confirm pending payments.', 'olama-registration' ) );
         }
 
@@ -104,7 +104,7 @@ class Olama_Reg_Payment_Policy {
     }
 
     public static function can_open_cash_session( ?int $account_id, ?int $cashier_id ): true|\WP_Error {
-        if ( ! self::current_user_can_any( [ 'olama_open_cash_session', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! self::current_user_can_any( [ 'olama_open_cash_session' ] ) ) {
             return new \WP_Error( 'unauthorized_cash_session_action', __( 'You are not allowed to open cash sessions.', 'olama-registration' ) );
         }
 
@@ -112,7 +112,7 @@ class Olama_Reg_Payment_Policy {
     }
 
     public static function can_close_cash_session( object $session ): true|\WP_Error {
-        if ( ! self::current_user_can_any( [ 'olama_close_cash_session', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! self::current_user_can_any( [ 'olama_close_cash_session' ] ) ) {
             return new \WP_Error( 'unauthorized_cash_session_action', __( 'You are not allowed to close cash sessions.', 'olama-registration' ) );
         }
 
@@ -134,7 +134,7 @@ class Olama_Reg_Payment_Policy {
     }
 
     public static function can_transfer_between_accounts( ?int $from_account_id, ?int $to_account_id ): true|\WP_Error {
-        if ( ! self::current_user_can_any( [ 'olama_transfer_cash_bank', 'olama_manage_registration_payments' ] ) ) {
+        if ( ! self::current_user_can_any( [ 'olama_transfer_cash_bank' ] ) ) {
             return new \WP_Error( 'unauthorized_transfer_action', __( 'You are not allowed to transfer cash or bank balances.', 'olama-registration' ) );
         }
 

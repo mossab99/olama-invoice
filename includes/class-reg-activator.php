@@ -169,6 +169,7 @@ class Olama_Reg_Activator {
             'olama_manage_cheques',
             'olama_transfer_cash_bank',
             'olama_view_cash_reports',
+            'olama_manage_registration_agreements',
             'olama_edit_agreement_admin_fields',
             'olama_create_agreement_amendment',
             'olama_approve_agreement_amendment',
@@ -181,16 +182,6 @@ class Olama_Reg_Activator {
 
     private static function install_capabilities(): void {
         $caps = self::financial_capabilities();
-        $legacy_payment_caps = [
-            'olama_record_payments',
-            'olama_open_cash_session',
-            'olama_close_cash_session',
-            'olama_reverse_payments',
-            'olama_confirm_bank_payments',
-            'olama_manage_cheques',
-            'olama_transfer_cash_bank',
-        ];
-
         foreach ( wp_roles()->roles as $role_key => $details ) {
             $role = get_role( $role_key );
             if ( ! $role ) {
@@ -201,17 +192,6 @@ class Olama_Reg_Activator {
                 foreach ( $caps as $cap ) {
                     $role->add_cap( $cap );
                 }
-                continue;
-            }
-
-            if ( ! empty( $details['capabilities']['olama_manage_registration_payments'] ) ) {
-                foreach ( $legacy_payment_caps as $cap ) {
-                    $role->add_cap( $cap );
-                }
-            }
-
-            if ( ! empty( $details['capabilities']['olama_manage_registration_reports'] ) ) {
-                $role->add_cap( 'olama_view_cash_reports' );
             }
         }
     }
