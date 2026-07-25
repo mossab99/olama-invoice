@@ -1177,7 +1177,10 @@
                 }
 
                 if (typeof $.fn.select2 !== 'undefined') {
-                    $content.find('select').each(function () {
+                    // Keep repeatable row templates as plain markup. Initializing
+                    // Select2 inside a hidden template makes later jQuery clones
+                    // inherit stale Select2 classes, containers, and element IDs.
+                    $content.find('select').not('#os-agr-fee-row-template select').each(function () {
                         var $select = $(this);
                         if (!$select.hasClass('select2-hidden-accessible') && !$select.prop('disabled')) {
                             $select.select2({ dir: 'rtl', width: '100%', dropdownParent: $modal });

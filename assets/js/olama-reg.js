@@ -728,6 +728,24 @@
     }
     window.olamaRegSyncAgreementFeeTemplateOptions = syncAgreementFeeTemplateOptions;
 
+    function initEmbeddedAgreementFeeRowSelects($row) {
+        if (typeof $.fn.select2 === 'undefined') return;
+
+        const $modal = $row.closest('#os-hub-original-form-modal');
+        if (!$modal.length) return;
+
+        $row.find('select').each(function () {
+            const $select = $(this);
+            if (!$select.hasClass('select2-hidden-accessible') && !$select.prop('disabled')) {
+                $select.select2({
+                    dir: 'rtl',
+                    width: '100%',
+                    dropdownParent: $modal
+                });
+            }
+        });
+    }
+
     function initStatementFamilySearch() {
         const $entityType = $('#olama-reg-statement-entity-type');
         const $familyField = $('#olama-reg-statement-family-field');
@@ -3451,6 +3469,7 @@
             }
         }
         $feeSelect.trigger('change');
+        initEmbeddedAgreementFeeRowSelects($template);
         initDatepickers($('#os-agr-fees-table tbody tr').last());
     });
 
