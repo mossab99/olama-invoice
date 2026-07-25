@@ -201,9 +201,21 @@ if ( $action === 'print' && $id ) {
                         <td class="label">الخصم الممنوح:</td>
                         <td style="text-align: left; color:#dc2626; font-weight:800;">- <?php echo esc_html( number_format( $invoice->discount, 2 ) ); ?></td>
                     </tr>
+                    <?php if ( (float) ( $invoice->debit_notes_total ?? 0 ) > 0 ): ?>
+                        <tr>
+                            <td class="label">إشعارات مدينة:</td>
+                            <td style="text-align: left; color:#b45309; font-weight:800;">+ <?php echo esc_html( number_format( $invoice->debit_notes_total, 2 ) ); ?></td>
+                        </tr>
+                    <?php endif; ?>
+                    <?php if ( (float) ( $invoice->credit_notes_total ?? 0 ) > 0 ): ?>
+                        <tr>
+                            <td class="label">إشعارات دائنة:</td>
+                            <td style="text-align: left; color:#1d4ed8; font-weight:800;">- <?php echo esc_html( number_format( $invoice->credit_notes_total, 2 ) ); ?></td>
+                        </tr>
+                    <?php endif; ?>
                     <tr class="grand-total">
                         <td class="label" style="color:#fff;">الإجمالي النهائي:</td>
-                        <td style="text-align: left;"><?php echo esc_html( number_format( $invoice->total, 2 ) ); ?></td>
+                        <td style="text-align: left;"><?php echo esc_html( number_format( $invoice->effective_total ?? $invoice->total, 2 ) ); ?></td>
                     </tr>
                     <tr>
                         <td class="label">المبلغ المدفوع:</td>
@@ -328,6 +340,9 @@ $query = "SELECT i.*, COALESCE(f.sponsor_full_name, f.father_name, f.mother_name
                  ft.template_name AS fee_template_name,
                  ft.subject_type AS fee_subject_type,
                  ft.subject_value AS fee_subject_value,
+                 COALESCE(adj.debit_total, 0) AS debit_notes_total,
+                 COALESCE(adj.credit_total, 0) AS credit_notes_total,
+                 GREATEST(0, i.total + COALESCE(adj.debit_total, 0) - COALESCE(adj.credit_total, 0)) AS effective_total,
                  a.agreement_number,
                  s.student_name AS direct_student_name,
                  ec.child_name AS direct_child_name
@@ -336,7 +351,20 @@ $query = "SELECT i.*, COALESCE(f.sponsor_full_name, f.father_name, f.mother_name
           LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.id = i.ext_customer_id OR c.customer_uid = i.family_uid
           LEFT JOIN " . $wpdb->prefix . "olama_fee_templates ft ON ft.id = i.fee_template_id
           LEFT JOIN " . $wpdb->prefix . "olama_agreements a ON a.id = i.agreement_id
-          LEFT JOIN " . $wpdb->prefix . "olama_core_students s ON s.student_uid = i.student_uid OR s.oracle_student_id = i.student_uid
+          LEFT JOIN (
+              SELECT invoice_id,
+                     SUM(CASE WHEN type = 'debit' AND status = 'issued' THEN amount ELSE 0 END) AS debit_total,
+                     SUM(CASE WHEN type = 'credit' AND status = 'issued' THEN amount ELSE 0 END) AS credit_total
+              FROM " . $wpdb->prefix . "olama_invoice_adjustments
+              GROUP BY invoice_id
+          ) adj ON adj.invoice_id = i.id
+          LEFT JOIN " . $wpdb->prefix . "olama_core_students s
+            ON s.student_uid = i.student_uid
+            OR (
+                (i.student_uid IS NULL OR i.student_uid = '' OR i.student_uid NOT LIKE 'ORA-STU-%')
+                AND s.oracle_student_id = COALESCE(NULLIF(i.oracle_student_id, ''), i.student_uid)
+                AND (s.family_uid = i.family_uid OR s.oracle_family_id = i.oracle_family_id)
+            )
           LEFT JOIN " . $wpdb->prefix . "olama_customer_children ec ON ec.id = i.ext_child_id
           WHERE {$where}
           ORDER BY i.issue_date DESC, i.id DESC";
@@ -379,13 +407,19 @@ foreach ( $invoices as $invoice_row ) {
                 "SELECT DISTINCT s.student_name
                  FROM {$wpdb->prefix}olama_agreement_fees af
                  LEFT JOIN {$wpdb->prefix}olama_core_students s
-                    ON s.student_uid = COALESCE(NULLIF(af.student_uid, ''), af.child_id)
-                    OR s.oracle_student_id = COALESCE(NULLIF(af.oracle_student_id, ''), af.child_id)
+                    ON s.student_uid = COALESCE(NULLIF(af.student_uid, ''), NULLIF(af.child_id, ''))
+                    OR (
+                        NULLIF(af.student_uid, '') IS NULL
+                        AND s.oracle_student_id = COALESCE(NULLIF(af.oracle_student_id, ''), NULLIF(af.child_id, ''))
+                        AND (s.family_uid = %s OR s.oracle_family_id = %s)
+                    )
                  WHERE af.agreement_id = %d
                    AND af.child_id IS NOT NULL
                    AND af.child_id != ''
                    AND s.student_name IS NOT NULL
                  ORDER BY s.student_name ASC",
+                (string) $invoice_row->family_uid,
+                (string) $invoice_row->oracle_family_id,
                 (int) $invoice_row->agreement_id
             ) ) ?: [];
         } else {
@@ -432,11 +466,18 @@ $custom_services = get_option( 'olama_reg_custom_services', ['دوسية', 'نش
 $_inv_stats = $wpdb->get_row(
     "SELECT
         COUNT(*) AS total_count,
-        COALESCE(SUM(total),0) AS total_invoiced,
-        COALESCE(SUM(amount_paid),0) AS total_paid,
-        COALESCE(SUM(balance),0) AS total_balance
-     FROM {$wpdb->prefix}olama_invoices
-     WHERE status NOT IN ('cancelled','draft')"
+        COALESCE(SUM(i.total + COALESCE(adj.debit_total, 0) - COALESCE(adj.credit_total, 0)),0) AS total_invoiced,
+        COALESCE(SUM(i.amount_paid),0) AS total_paid,
+        COALESCE(SUM(i.balance),0) AS total_balance
+     FROM {$wpdb->prefix}olama_invoices i
+     LEFT JOIN (
+         SELECT invoice_id,
+                SUM(CASE WHEN type = 'debit' AND status = 'issued' THEN amount ELSE 0 END) AS debit_total,
+                SUM(CASE WHEN type = 'credit' AND status = 'issued' THEN amount ELSE 0 END) AS credit_total
+         FROM {$wpdb->prefix}olama_invoice_adjustments
+         GROUP BY invoice_id
+     ) adj ON adj.invoice_id = i.id
+     WHERE i.status NOT IN ('cancelled','draft')"
 );
 ?>
 <div class="wrap olama-reg-wrap" dir="rtl">

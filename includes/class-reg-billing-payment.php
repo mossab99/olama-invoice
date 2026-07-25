@@ -64,6 +64,11 @@ class Olama_Reg_Billing_Payment {
         $method = sanitize_text_field( $data['method'] ?? 'cash' );
         if ( ! in_array( $method, $valid_methods, true ) ) $method = 'cash';
 
+        $reference = sanitize_text_field( $data['reference'] ?? $data['check_no'] ?? $data['cheque_no'] ?? '' );
+        if ( $method === 'cheque' && $reference === '' ) {
+            return new \WP_Error( 'missing_cheque_number', __( 'رقم الشيك مطلوب عند اختيار الدفع بالشيك.', 'olama-registration' ) );
+        }
+
         $account_id = absint( $data['account_id'] ?? 0 ) ?: Olama_Reg_Cash_Bank_Movement::get_default_account_id_for_method( $method );
 
         $policy = Olama_Reg_Payment_Policy::can_create_payment( $invoice, $method, $account_id ?: null );
@@ -102,8 +107,8 @@ class Olama_Reg_Billing_Payment {
             if ( (int) $session->cashier_id !== get_current_user_id() ) {
                 return new \WP_Error( 'cash_session_cashier_mismatch', __( 'Cash receipts must be recorded in your own open cash session.', 'olama-registration' ) );
             }
-            if ( $session->session_date !== $payment_date ) {
-                return new \WP_Error( 'cash_session_date_mismatch', __( 'Cash receipt date must match the selected cash session date.', 'olama-registration' ) );
+            if ( (string) $session->session_date > $payment_date ) {
+                return new \WP_Error( 'cash_session_date_mismatch', __( 'لا يمكن أن يسبق تاريخ سند القبض تاريخ فتح جلسة الصندوق.', 'olama-registration' ) );
             }
         }
 
@@ -122,7 +127,7 @@ class Olama_Reg_Billing_Payment {
             'method'         => $method,
             'status'         => $status,
             'oracle_sync_status' => 'not_required',
-            'reference'      => sanitize_text_field( $data['reference'] ?? '' ) ?: null,
+            'reference'      => $reference ?: null,
             'external_reference' => sanitize_text_field( $data['external_reference'] ?? '' ) ?: null,
             'received_by'    => get_current_user_id(),
             'notes'          => sanitize_textarea_field( $data['notes'] ?? '' ) ?: null,
@@ -226,11 +231,11 @@ class Olama_Reg_Billing_Payment {
             }
 
             if ( $account_id ) {
-                $open_session = Olama_Reg_Cash_Session::get_open_session( $account_id, get_current_user_id(), $reversal_date );
+                $open_session = Olama_Reg_Cash_Session::get_open_session_for_receipt( $account_id, get_current_user_id(), $reversal_date );
                 if ( $open_session ) {
                     $reversal_cash_session_id = (int) $open_session->id;
                 } elseif ( get_option( 'olama_require_cash_session', '0' ) === '1' ) {
-                    return new \WP_Error( 'missing_cash_session', __( 'Cash receipt reversals require an open cash session for today.', 'olama-registration' ) );
+                    return new \WP_Error( 'missing_cash_session', __( 'يتطلب عكس السند النقدي وجود جلسة صندوق مفتوحة.', 'olama-registration' ) );
                 }
             }
         }

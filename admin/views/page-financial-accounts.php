@@ -29,10 +29,11 @@ if ( $_SERVER['REQUEST_METHOD'] === 'POST' ) {
             $error = $result->get_error_message();
         } else {
             $notice = sprintf(
-                __( 'تم الإصلاح: %1$d أرقام سندات، %2$d حسابات، %3$d حركات.', 'olama-registration' ),
+                __( 'تم الإصلاح: %1$d أرقام سندات، %2$d حسابات، %3$d حركات جديدة، %4$d تعارضات حركات قديمة.', 'olama-registration' ),
                 (int) $result['payment_numbers'],
                 (int) $result['accounts'],
-                (int) $result['movements']
+                (int) $result['movements'],
+                (int) ( $result['movement_conflicts'] ?? 0 )
             );
         }
     } elseif ( $action === 'transfer_between_accounts' ) {
@@ -276,10 +277,11 @@ $money = static function ( $amount ): string {
         <p>
             <?php
             echo esc_html( sprintf(
-                __( 'المعاينة الحالية: %1$d سند بلا رقم، %2$d سند بلا حساب، %3$d سند منشور بلا حركة مالية.', 'olama-registration' ),
+                __( 'المعاينة الحالية: %1$d سند بلا رقم، %2$d سند بلا حساب، %3$d سند منشور بلا حركة مالية، %4$d حركة قديمة متعارضة.', 'olama-registration' ),
                 (int) $repair_preview['missing_payment_no'],
                 (int) $repair_preview['missing_account'],
-                (int) $repair_preview['missing_movements']
+                (int) $repair_preview['missing_movements'],
+                (int) ( $repair_preview['mismatched_movements'] ?? 0 )
             ) );
             ?>
         </p>
@@ -288,7 +290,7 @@ $money = static function ( $amount ): string {
             <input type="hidden" name="financial_action" value="repair_receipts">
             <label><input type="checkbox" name="repair_payment_numbers" value="1" checked> <?php esc_html_e( 'توليد أرقام للسندات القديمة', 'olama-registration' ); ?></label>
             <label><input type="checkbox" name="repair_accounts" value="1" checked> <?php esc_html_e( 'ربط السندات بالحسابات الافتراضية', 'olama-registration' ); ?></label>
-            <label><input type="checkbox" name="repair_movements" value="1"> <?php esc_html_e( 'إنشاء حركات مالية تاريخية للسندات المنشورة', 'olama-registration' ); ?></label>
+            <label><input type="checkbox" name="repair_movements" value="1" checked> <?php esc_html_e( 'مصالحة حركات السندات المنشورة وإصلاح تعارضاتها', 'olama-registration' ); ?></label>
             <div style="display:flex; align-items:flex-end;">
                 <button type="submit" class="olama-reg-btn olama-reg-btn--secondary">
                     <span class="dashicons dashicons-admin-tools"></span> <?php esc_html_e( 'تشغيل الإصلاح المحدد', 'olama-registration' ); ?>

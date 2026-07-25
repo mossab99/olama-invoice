@@ -233,11 +233,11 @@ class Olama_Reg_Cash_Session {
 
         $account_id = (int) ( $payment->account_id ?: Olama_Reg_Cash_Bank_Movement::get_default_account_id( 'cash' ) );
         $payment_date = self::sanitize_date( (string) ( $payment->payment_date ?? current_time( 'Y-m-d' ) ) );
-        $session = self::get_open_session( $account_id, (int) $payment->received_by, $payment_date );
+        $session = self::get_open_session_for_receipt( $account_id, (int) $payment->received_by, $payment_date );
 
         if ( ! $session ) {
             if ( get_option( 'olama_require_cash_session', '0' ) === '1' ) {
-                return new \WP_Error( 'missing_cash_session', __( 'Cash receipts require an open cash session for the receipt date.', 'olama-registration' ) );
+                return new \WP_Error( 'missing_cash_session', __( 'يتطلب القبض النقدي وجود جلسة صندوق مفتوحة بدأت في تاريخ السند أو قبله.', 'olama-registration' ) );
             }
             return true;
         }
@@ -412,6 +412,20 @@ class Olama_Reg_Cash_Session {
              ORDER BY id DESC LIMIT 1",
             $account_id
         ) ) ?: null;
+    }
+
+    /**
+     * An open cash session remains valid across calendar days until it is
+     * explicitly closed. A receipt may not, however, predate the session.
+     */
+    public static function get_open_session_for_receipt( int $account_id, int $cashier_id, string $receipt_date ): ?object {
+        $session = self::get_open_session( $account_id, $cashier_id );
+        if ( ! $session ) {
+            return null;
+        }
+
+        $receipt_date = self::sanitize_date( $receipt_date );
+        return (string) $session->session_date <= $receipt_date ? $session : null;
     }
 
     private static function sanitize_date( string $date ): string {

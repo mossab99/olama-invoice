@@ -169,17 +169,29 @@ class Olama_Reg_Cash_Bank_Movement {
 
         $transfer_id = (int) $wpdb->insert_id;
         $notes = self::transfer_note( (object) $payload, $from_account, $to_account );
+        $from_cash_session_id = null;
+        $to_cash_session_id = null;
+
+        if ( (string) $from_account->type === 'cash' ) {
+            $session = Olama_Reg_Cash_Session::get_open_session( $from_account_id, get_current_user_id() );
+            $from_cash_session_id = $session ? (int) $session->id : null;
+        }
+        if ( (string) $to_account->type === 'cash' ) {
+            $session = Olama_Reg_Cash_Session::get_open_session( $to_account_id, get_current_user_id() );
+            $to_cash_session_id = $session ? (int) $session->id : null;
+        }
 
         $out = self::record_movement( [
-            'account_id'    => $from_account_id,
-            'movement_type' => 'transfer_out',
-            'source_type'   => 'account_transfer',
-            'source_id'     => $transfer_id,
-            'direction'     => 'out',
-            'amount'        => $amount,
-            'movement_date' => $transfer_date,
-            'created_by'    => get_current_user_id(),
-            'notes'         => $notes,
+            'account_id'      => $from_account_id,
+            'cash_session_id' => $from_cash_session_id,
+            'movement_type'   => 'transfer_out',
+            'source_type'     => 'account_transfer',
+            'source_id'       => $transfer_id,
+            'direction'       => 'out',
+            'amount'          => $amount,
+            'movement_date'   => $transfer_date,
+            'created_by'      => get_current_user_id(),
+            'notes'           => $notes,
         ] );
         if ( is_wp_error( $out ) ) {
             $wpdb->query( 'ROLLBACK' );
@@ -187,15 +199,16 @@ class Olama_Reg_Cash_Bank_Movement {
         }
 
         $in = self::record_movement( [
-            'account_id'    => $to_account_id,
-            'movement_type' => 'transfer_in',
-            'source_type'   => 'account_transfer',
-            'source_id'     => $transfer_id,
-            'direction'     => 'in',
-            'amount'        => $amount,
-            'movement_date' => $transfer_date,
-            'created_by'    => get_current_user_id(),
-            'notes'         => $notes,
+            'account_id'      => $to_account_id,
+            'cash_session_id' => $to_cash_session_id,
+            'movement_type'   => 'transfer_in',
+            'source_type'     => 'account_transfer',
+            'source_id'       => $transfer_id,
+            'direction'       => 'in',
+            'amount'          => $amount,
+            'movement_date'   => $transfer_date,
+            'created_by'      => get_current_user_id(),
+            'notes'           => $notes,
         ] );
         if ( is_wp_error( $in ) ) {
             $wpdb->query( 'ROLLBACK' );
@@ -372,23 +385,7 @@ class Olama_Reg_Cash_Bank_Movement {
     private static function record_movement( array $data ): int|\WP_Error {
         global $wpdb;
 
-        $existing = $wpdb->get_var( $wpdb->prepare(
-            "SELECT id FROM " . self::t( 'olama_cash_bank_movements' ) . "
-             WHERE source_type = %s AND source_id = %d AND movement_type = %s",
-            $data['source_type'],
-            (int) $data['source_id'],
-            $data['movement_type']
-        ) );
-        if ( $existing ) {
-            return (int) $existing;
-        }
-
-        if ( ! self::acquire_number_lock() ) {
-            return new \WP_Error( 'number_lock_failed', __( 'Could not reserve a movement number. Please try again.', 'olama-registration' ) );
-        }
-
         $payload = [
-            'movement_no'     => self::generate_movement_no(),
             'account_id'      => (int) $data['account_id'],
             'cash_session_id' => $data['cash_session_id'] ?? null,
             'movement_type'   => sanitize_key( $data['movement_type'] ),
@@ -401,6 +398,38 @@ class Olama_Reg_Cash_Bank_Movement {
             'created_by'      => (int) ( $data['created_by'] ?? get_current_user_id() ),
             'notes'           => sanitize_textarea_field( $data['notes'] ?? '' ) ?: null,
         ];
+
+        $existing = $wpdb->get_row( $wpdb->prepare(
+            "SELECT * FROM " . self::t( 'olama_cash_bank_movements' ) . "
+             WHERE source_type = %s AND source_id = %d AND movement_type = %s",
+            $payload['source_type'],
+            $payload['source_id'],
+            $payload['movement_type']
+        ) );
+        if ( $existing ) {
+            $same_event =
+                (int) $existing->account_id === $payload['account_id']
+                && (int) ( $existing->cash_session_id ?? 0 ) === (int) ( $payload['cash_session_id'] ?? 0 )
+                && (string) $existing->direction === $payload['direction']
+                && round( (float) $existing->amount, 2 ) === $payload['amount']
+                && (string) $existing->movement_date === $payload['movement_date']
+                && (string) $existing->status === $payload['status'];
+
+            if ( $same_event ) {
+                return (int) $existing->id;
+            }
+
+            return new \WP_Error(
+                'movement_source_collision',
+                __( 'تعذر تسجيل الحركة لأن معرف السند مرتبط بحركة مالية قديمة مختلفة. يرجى تشغيل إصلاح حركات السندات.', 'olama-registration' )
+            );
+        }
+
+        if ( ! self::acquire_number_lock() ) {
+            return new \WP_Error( 'number_lock_failed', __( 'Could not reserve a movement number. Please try again.', 'olama-registration' ) );
+        }
+
+        $payload = [ 'movement_no' => self::generate_movement_no() ] + $payload;
 
         $result = $wpdb->insert( self::t( 'olama_cash_bank_movements' ), $payload );
         self::release_number_lock();

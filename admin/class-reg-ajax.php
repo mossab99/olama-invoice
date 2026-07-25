@@ -2663,6 +2663,9 @@ class Olama_Reg_Ajax
                          ft.template_name AS fee_template_name,
                          ft.subject_type AS fee_subject_type,
                          ft.subject_value AS fee_subject_value,
+                         COALESCE(adj.debit_total, 0) AS debit_notes_total,
+                         COALESCE(adj.credit_total, 0) AS credit_notes_total,
+                         GREATEST(0, i.total + COALESCE(adj.debit_total, 0) - COALESCE(adj.credit_total, 0)) AS effective_total,
                          a.agreement_number,
                          s.student_name AS direct_student_name,
                          ec.child_name AS direct_child_name
@@ -2673,6 +2676,13 @@ class Olama_Reg_Ajax
                   LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.id = i.ext_customer_id OR c.customer_uid = i.family_uid
                   LEFT JOIN " . $wpdb->prefix . "olama_fee_templates ft ON ft.id = i.fee_template_id
                   LEFT JOIN " . $wpdb->prefix . "olama_agreements a ON a.id = i.agreement_id
+                  LEFT JOIN (
+                      SELECT invoice_id,
+                             SUM(CASE WHEN type = 'debit' AND status = 'issued' THEN amount ELSE 0 END) AS debit_total,
+                             SUM(CASE WHEN type = 'credit' AND status = 'issued' THEN amount ELSE 0 END) AS credit_total
+                      FROM " . $wpdb->prefix . "olama_invoice_adjustments
+                      GROUP BY invoice_id
+                  ) adj ON adj.invoice_id = i.id
                   LEFT JOIN " . $wpdb->prefix . "olama_core_students s ON s.student_uid = i.student_uid
                   LEFT JOIN " . $wpdb->prefix . "olama_customer_children ec ON ec.id = i.ext_child_id
                   WHERE {$where}
@@ -2713,14 +2723,19 @@ class Olama_Reg_Ajax
                         "SELECT DISTINCT s.student_name
                          FROM {$wpdb->prefix}olama_agreement_fees af
                          LEFT JOIN {$wpdb->prefix}olama_core_students s
-                            ON s.student_uid = af.child_id
-                            OR (s.family_uid = %s AND s.oracle_student_id = af.child_id)
+                            ON s.student_uid = COALESCE(NULLIF(af.student_uid, ''), NULLIF(af.child_id, ''))
+                            OR (
+                                NULLIF(af.student_uid, '') IS NULL
+                                AND s.oracle_student_id = COALESCE(NULLIF(af.oracle_student_id, ''), NULLIF(af.child_id, ''))
+                                AND (s.family_uid = %s OR s.oracle_family_id = %s)
+                            )
                          WHERE af.agreement_id = %d
                            AND af.child_id IS NOT NULL
                            AND af.child_id != ''
                            AND s.student_name IS NOT NULL
                          ORDER BY s.student_name ASC",
-                        $uid,
+                        (string) $invoice_row->family_uid,
+                        (string) $invoice_row->oracle_family_id,
                         (int) $invoice_row->agreement_id
                     )) ?: [];
                 } else {
@@ -4125,6 +4140,10 @@ class Olama_Reg_Ajax
     {
         $this->guard();
 
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'هذه العملية متاحة لمدير النظام فقط.', 'olama-registration' ) ], 403 );
+        }
+
         // Safety keyword lock
         $confirm = sanitize_text_field($_POST['confirm_reset'] ?? '');
         if (strtoupper($confirm) !== 'RESET') {
@@ -4133,6 +4152,23 @@ class Olama_Reg_Ajax
 
         global $wpdb;
         $cleared = [];
+        $reset_errors = [];
+        $tables_to_verify = [];
+
+        $truncate_tables = static function ( array $tables ) use ( $wpdb, &$reset_errors, &$tables_to_verify ): void {
+            foreach ( $tables as $table_suffix ) {
+                $table = $wpdb->prefix . $table_suffix;
+                $exists = (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+                if ( $exists !== $table ) {
+                    continue;
+                }
+
+                $tables_to_verify[] = $table;
+                if ( $wpdb->query( "TRUNCATE TABLE `{$table}`" ) === false ) {
+                    $reset_errors[] = $table . ': ' . $wpdb->last_error;
+                }
+            }
+        };
 
         // Disable foreign key checks temporarily if needed, though they are not set on these tables typically
         $wpdb->query("SET FOREIGN_KEY_CHECKS = 0;");
@@ -4157,16 +4193,52 @@ class Olama_Reg_Ajax
                 'olama_family_financial_snapshots',
                 'olama_reg_financial',
             ];
-            foreach ($tables as $t) {
-                $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}{$t}");
-            }
+            $truncate_tables( $tables );
 
             // Account definitions remain available after a reset, but their
             // configured baseline must not carry a pre-reset balance forward.
-            $wpdb->query(
+            $accounts_reset = $wpdb->query(
                 "UPDATE {$wpdb->prefix}olama_financial_accounts
                  SET opening_balance = 0.00"
             );
+            if ( $accounts_reset === false ) {
+                $reset_errors[] = $wpdb->prefix . 'olama_financial_accounts: ' . $wpdb->last_error;
+            }
+
+            /*
+             * Agreements may intentionally be retained while their invoices and
+             * receipts are reset. Remove every reference to the deleted financial
+             * documents so a fresh invoice can be generated in the next test run.
+             */
+            $agreement_fees_table = $wpdb->prefix . 'olama_agreement_fees';
+            if ( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $agreement_fees_table ) ) ) === $agreement_fees_table ) {
+                $result = $wpdb->query(
+                    "UPDATE `{$agreement_fees_table}`
+                     SET invoice_id = NULL, paid_status = 'unpaid'"
+                );
+                if ( $result === false ) {
+                    $reset_errors[] = $agreement_fees_table . ': ' . $wpdb->last_error;
+                }
+            }
+
+            $amendments_table = $wpdb->prefix . 'olama_agreement_amendments';
+            if ( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $amendments_table ) ) ) === $amendments_table ) {
+                $result = $wpdb->query(
+                    "UPDATE `{$amendments_table}`
+                     SET invoice_id = NULL, credit_adjustment_id = NULL, debit_adjustment_id = NULL"
+                );
+                if ( $result === false ) {
+                    $reset_errors[] = $amendments_table . ': ' . $wpdb->last_error;
+                }
+            }
+
+            $amendment_lines_table = $wpdb->prefix . 'olama_agreement_amendment_lines';
+            if ( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $amendment_lines_table ) ) ) === $amendment_lines_table ) {
+                $result = $wpdb->query( "UPDATE `{$amendment_lines_table}` SET invoice_id = NULL" );
+                if ( $result === false ) {
+                    $reset_errors[] = $amendment_lines_table . ': ' . $wpdb->last_error;
+                }
+            }
 
             $cleared[] = 'البيانات المالية والمعاملات والسندات والقيود الاستحقاقية وأرصدة الحسابات';
         }
@@ -4174,25 +4246,24 @@ class Olama_Reg_Ajax
         // 2. Agreements Data
         if (!empty($_POST['reset_agreements'])) {
             $tables = [
-                'olama_agreements',
+                'olama_agreement_amendment_lines',
+                'olama_agreement_amendments',
+                'olama_agreement_participants',
                 'olama_agreement_fees',
-                'olama_agreement_clauses'
+                'olama_agreement_clauses',
+                'olama_agreements',
             ];
-            foreach ($tables as $t) {
-                $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}{$t}");
-            }
+            $truncate_tables( $tables );
             $cleared[] = 'بيانات العقود بنوعيها والرسوم والبنود المرتبطة بها';
         }
 
         // 3. Customers Data
         if (!empty($_POST['reset_customers'])) {
             $tables = [
+                'olama_customer_children',
                 'olama_customers',
-                'olama_customer_children'
             ];
-            foreach ($tables as $t) {
-                $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}{$t}");
-            }
+            $truncate_tables( $tables );
             $cleared[] = 'بيانات جهات الاتصال والعملاء الإضافيين وأولادهم';
         }
 
@@ -4205,9 +4276,7 @@ class Olama_Reg_Ajax
                 'olama_agreement_template_clauses',
                 'olama_agreement_clause_bank'
             ];
-            foreach ($tables as $t) {
-                $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}{$t}");
-            }
+            $truncate_tables( $tables );
             $cleared[] = 'قوالب الرسوم، قوالب العقود، وبنك الشروط';
         }
 
@@ -4215,6 +4284,30 @@ class Olama_Reg_Ajax
 
         if (empty($cleared)) {
             wp_send_json_error(['message' => 'لم يتم اختيار أي بيانات لمسحها.']);
+        }
+
+        foreach ( array_unique( $tables_to_verify ) as $table ) {
+            $remaining = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$table}`" );
+            if ( $remaining !== 0 ) {
+                $reset_errors[] = sprintf( '%s: بقي %d سجل بعد المسح', $table, $remaining );
+            }
+        }
+
+        if ( ! empty( $_POST['reset_transactions'] ) ) {
+            $remaining_opening_balances = (float) $wpdb->get_var(
+                "SELECT COALESCE(SUM(ABS(opening_balance)), 0)
+                 FROM {$wpdb->prefix}olama_financial_accounts"
+            );
+            if ( $remaining_opening_balances > 0.0001 ) {
+                $reset_errors[] = __( 'لم تتم إعادة جميع الأرصدة الافتتاحية للحسابات إلى صفر.', 'olama-registration' );
+            }
+        }
+
+        if ( $reset_errors ) {
+            wp_send_json_error( [
+                'message' => __( 'اكتمل المسح جزئيًا، لكن تعذر تنظيف بعض البيانات. التفاصيل: ', 'olama-registration' )
+                    . implode( ' | ', array_unique( $reset_errors ) ),
+            ] );
         }
 
         wp_send_json_success([

@@ -86,7 +86,14 @@ if ( ! defined( 'ABSPATH' ) ) exit;
                         <?php endif; ?>
                     </td>
                     <td style="color:var(--reg-text-muted);"><?php echo esc_html( $inv->issue_date ); ?></td>
-                    <td class="olama-reg-text--bold"><?php echo esc_html( number_format( $inv->total, 2 ) ); ?></td>
+                    <td class="olama-reg-text--bold">
+                        <?php echo esc_html( number_format( $inv->effective_total ?? $inv->total, 2 ) ); ?>
+                        <?php if ( ! empty( $inv->debit_notes_total ) || ! empty( $inv->credit_notes_total ) ) : ?>
+                            <div style="margin-top:3px; color:var(--reg-text-muted); font-size:11px; font-weight:500;">
+                                <?php esc_html_e( 'يشمل الإشعارات المالية', 'olama-registration' ); ?>
+                            </div>
+                        <?php endif; ?>
+                    </td>
                     <td style="color:#c62828; font-weight:700;"><?php echo esc_html( number_format( $inv->discount ?? 0, 2 ) ); ?></td>
                     <td style="color:var(--reg-success); font-weight:700;"><?php echo esc_html( number_format( $inv->amount_paid, 2 ) ); ?></td>
                     <td class="olama-reg-balance-cell"><?php echo esc_html( number_format( $inv->balance, 2 ) ); ?></td>

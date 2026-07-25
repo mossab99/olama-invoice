@@ -1098,7 +1098,7 @@
                     const inv = res.data.invoice;
 
                     $('#drawer-invoice-number').text(inv.invoice_number);
-                    $('#drawer-total-val').text(parseFloat(inv.total).toFixed(2) + ' د.أ');
+                    $('#drawer-total-val').text(parseFloat(inv.effective_total || inv.total).toFixed(2) + ' د.أ');
                     $('#drawer-discount-val').text(parseFloat(inv.discount || 0).toFixed(2) + ' د.أ');
                     $('#drawer-paid-val').text(parseFloat(inv.amount_paid).toFixed(2) + ' د.أ');
                     $('#drawer-balance-val').text(parseFloat(inv.balance).toFixed(2) + ' د.أ');
@@ -1579,9 +1579,39 @@
         $('#olama-reg-payment-modal').fadeOut(200);
     });
 
+    function syncPaymentReferenceField() {
+        const isCheque = $('#pay_method').val() === 'cheque';
+        const $wrap = $('#pay_reference_wrap');
+        const $input = $('#pay_reference');
+
+        $wrap.toggle(isCheque);
+        $wrap.toggleClass('olama-reg-field--required', isCheque);
+        $input.prop('required', isCheque);
+
+        if (isCheque) {
+            $wrap.find('label').text('رقم الشيك');
+            $input.attr('placeholder', 'أدخل رقم الشيك...');
+        } else {
+            $input.val('');
+        }
+    }
+
+    $(document).on('change', '#pay_method', syncPaymentReferenceField);
+
     $(document).on('submit', '#olama-reg-payment-form', function (e) {
         e.preventDefault();
         const $btn = $('#olama-reg-save-payment-btn');
+        const method = $('#pay_method').val();
+        const reference = $.trim($('#pay_reference').val());
+        if (method === 'cheque' && !reference) {
+            showNotice('رقم الشيك مطلوب عند اختيار الدفع بالشيك.', true);
+            $('#pay_reference').trigger('focus');
+            return;
+        }
+
+        const selectedInvoiceId = $('#pay_invoice_id').val() || $('#pay_select_invoice').val();
+        $('#pay_invoice_id').val(selectedInvoiceId || '');
+
         const formData = {};
         $(this).find('[name]').each(function () {
             formData[this.name] = $(this).val();
@@ -1847,6 +1877,7 @@
         if ($('#olama-reg-payment-modal').length === 0) {
             $('body').append(paymentModalHtml);
         }
+        syncPaymentReferenceField();
 
         initDatepickers($('.olama-reg-wrap'));
         initSelect2($('.olama-reg-wrap'));
@@ -2876,7 +2907,7 @@
                                 const inv = res.data.invoice;
 
                                 $('#drawer-invoice-number').text(inv.invoice_number);
-                                $('#drawer-total-val').text(parseFloat(inv.total).toFixed(2) + ' د.أ');
+                                $('#drawer-total-val').text(parseFloat(inv.effective_total || inv.total).toFixed(2) + ' د.أ');
                                 $('#drawer-discount-val').text(parseFloat(inv.discount || 0).toFixed(2) + ' د.أ');
                                 $('#drawer-paid-val').text(parseFloat(inv.amount_paid).toFixed(2) + ' د.أ');
                                 $('#drawer-balance-val').text(parseFloat(inv.balance).toFixed(2) + ' د.أ');
