@@ -4132,18 +4132,35 @@ class Olama_Reg_Ajax
         // 1. Transactional & Financial Data
         if (!empty($_POST['reset_transactions'])) {
             $tables = [
-                'olama_invoices',
+                'olama_payment_allocations',
+                'olama_invoice_adjustments',
                 'olama_invoice_items',
                 'olama_invoice_installments',
+                'olama_bank_transfer_details',
+                'olama_epayment_details',
+                'olama_cheques',
                 'olama_payments',
+                'olama_invoices',
+                'olama_cash_bank_movements',
+                'olama_account_transfers',
+                'olama_cash_sessions',
                 'olama_billing_audit',
                 'olama_settlement_receipts',
-                'olama_reg_financial'
+                'olama_family_financial_snapshots',
+                'olama_reg_financial',
             ];
             foreach ($tables as $t) {
                 $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}{$t}");
             }
-            $cleared[] = 'البيانات المالية والمعاملات والسندات والقيود الاستحقاقية';
+
+            // Account definitions remain available after a reset, but their
+            // configured baseline must not carry a pre-reset balance forward.
+            $wpdb->query(
+                "UPDATE {$wpdb->prefix}olama_financial_accounts
+                 SET opening_balance = 0.00"
+            );
+
+            $cleared[] = 'البيانات المالية والمعاملات والسندات والقيود الاستحقاقية وأرصدة الحسابات';
         }
 
         // 2. Agreements Data
