@@ -19,29 +19,21 @@ class Olama_Reg_Academic_Year_Context {
     }
 
     public static function get( int $academic_year_id ): ?object {
-        global $wpdb;
-
         if ( $academic_year_id <= 0 ) {
             return null;
         }
 
-        $row = $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}olama_academic_years WHERE id = %d LIMIT 1",
-            $academic_year_id
-        ) );
+        $row = function_exists( 'olama_core' ) && method_exists( olama_core(), 'academic_calendar' )
+            ? olama_core()->academic_calendar()->year( $academic_year_id )
+            : null;
 
         return $row ? self::hydrate( $row ) : null;
     }
 
     public static function current(): ?object {
-        global $wpdb;
-
-        $row = $wpdb->get_row(
-            "SELECT * FROM {$wpdb->prefix}olama_academic_years
-             WHERE is_current = 1 OR is_active = 1
-             ORDER BY is_current DESC, is_active DESC, id DESC
-             LIMIT 1"
-        );
+        $row = function_exists( 'olama_core' ) && method_exists( olama_core(), 'academic_context' )
+            ? olama_core()->academic_context()->current_year()
+            : null;
 
         return $row ? self::hydrate( $row ) : null;
     }
@@ -49,6 +41,13 @@ class Olama_Reg_Academic_Year_Context {
     public static function core_study_year( int $academic_year_id ): string {
         $year = self::get( $academic_year_id );
         return $year ? (string) $year->core_study_year : '';
+    }
+
+    public static function assert_writable( int $academic_year_id ) {
+        if ( ! function_exists( 'olama_core' ) || ! method_exists( olama_core(), 'academic_context' ) ) {
+            return new \WP_Error( 'academic_context_unavailable', __( 'Olama Core academic context is not available.', 'olama-registration' ) );
+        }
+        return olama_core()->academic_context()->assert_writable_year( $academic_year_id );
     }
 
     private static function hydrate( object $row ): object {

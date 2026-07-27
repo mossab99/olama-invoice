@@ -34,15 +34,10 @@ class Olama_Reg_Student {
     public static function get_family_students( string $family_uid, $study_year = '' ): array {
         $academic_year_id = is_numeric( $study_year ) ? (int) $study_year : 0;
         if ( $study_year !== '' && $academic_year_id <= 0 ) {
-            global $wpdb;
-            $academic_year_id = (int) $wpdb->get_var( $wpdb->prepare(
-                "SELECT id FROM {$wpdb->prefix}olama_academic_years
-                 WHERE code = %s OR year_name = %s OR name_ar = %s
-                 LIMIT 1",
-                $study_year,
-                $study_year,
-                $study_year
-            ) );
+            $year = function_exists( 'olama_core' )
+                ? olama_core()->academic_calendar()->resolve_year_code( $study_year )
+                : null;
+            $academic_year_id = $year ? (int) $year->id : 0;
         }
 
         return array_map(

@@ -52,13 +52,10 @@ class Olama_Reg_Billing_Invoice
     {
         global $wpdb;
 
-        // Resolve 4-digit year from academic_year_id
+        // Resolve the label from the Core-owned academic calendar.
         $year_label = '';
-        if (class_exists('Olama_School_Academic')) {
-            $ay = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}olama_academic_years WHERE id = %d",
-                $year_id
-            ));
+        if (function_exists('olama_core')) {
+            $ay = olama_core()->academic_calendar()->year($year_id);
             if ($ay && !empty($ay->year_name)) {
                 // Extract first 4-digit sequence from the label (e.g. "2024-2025" → 2024)
                 preg_match('/(\d{4})/', $ay->year_name, $m);
@@ -107,6 +104,10 @@ class Olama_Reg_Billing_Invoice
         $year_id = absint($data['academic_year_id'] ?? 0);
         if (!$year_id) {
             return new \WP_Error('missing_year', __('Academic year is required.', 'olama-registration'));
+        }
+        $year_allowed = Olama_Reg_Academic_Year_Context::assert_writable($year_id);
+        if (is_wp_error($year_allowed)) {
+            return $year_allowed;
         }
 
         $issue_date = self::sanitize_date($data['issue_date'] ?? date('Y-m-d'));

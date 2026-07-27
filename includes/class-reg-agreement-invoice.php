@@ -614,8 +614,8 @@ class Olama_Reg_Agreement_Invoice {
         }
 
         $year_id = (int) ( $agreement->academic_year_id ?? 0 );
-        if ( ! $year_id && class_exists( 'Olama_School_Academic' ) ) {
-            $active_year = Olama_School_Academic::get_active_year();
+        if ( ! $year_id && function_exists( 'olama_core' ) ) {
+            $active_year = olama_core()->academic_context()->current_year();
             if ( $active_year ) {
                 $year_id = (int) $active_year->id;
             }
@@ -687,21 +687,11 @@ class Olama_Reg_Agreement_Invoice {
     }
 
     public static function get_academic_year_end_date( int $academic_year_id = 0 ): string {
-        global $wpdb;
-
-        if ( $academic_year_id > 0 ) {
-            $academic_year = class_exists( 'Olama_School_Academic' ) && method_exists( 'Olama_School_Academic', 'get_year' )
-                ? Olama_School_Academic::get_year( $academic_year_id )
-                : $wpdb->get_row( $wpdb->prepare(
-                    "SELECT * FROM {$wpdb->prefix}olama_academic_years WHERE id = %d LIMIT 1",
-                    $academic_year_id
-                ) );
-        } else {
-            $academic_year = class_exists( 'Olama_School_Academic' )
-                ? Olama_School_Academic::get_active_year()
-                : $wpdb->get_row(
-                    "SELECT * FROM {$wpdb->prefix}olama_academic_years WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-                );
+        $academic_year = null;
+        if ( function_exists( 'olama_core' ) ) {
+            $academic_year = $academic_year_id > 0
+                ? olama_core()->academic_calendar()->year( $academic_year_id )
+                : olama_core()->academic_context()->current_year();
         }
 
         if ( ! $academic_year || empty( $academic_year->id ) ) {
@@ -714,36 +704,17 @@ class Olama_Reg_Agreement_Invoice {
             }
         }
 
-        $columns = $wpdb->get_col( "DESCRIBE {$wpdb->prefix}olama_academic_years", 0 );
-        foreach ( [ 'end_date', 'year_end_date', 'date_end' ] as $field ) {
-            if ( in_array( $field, (array) $columns, true ) ) {
-                $date = $wpdb->get_var( $wpdb->prepare(
-                    "SELECT {$field} FROM {$wpdb->prefix}olama_academic_years WHERE id = %d",
-                    (int) $academic_year->id
-                ) );
-                if ( $date ) {
-                    return self::sanitize_date( $date );
-                }
-            }
-        }
-
         return '';
     }
 
     public static function get_academic_year_start_date( int $academic_year_id = 0 ): string {
-        global $wpdb;
-
-        if ( $academic_year_id > 0 ) {
-            $date = $wpdb->get_var( $wpdb->prepare(
-                "SELECT start_date FROM {$wpdb->prefix}olama_academic_years WHERE id = %d LIMIT 1",
-                $academic_year_id
-            ) );
-        } else {
-            $date = $wpdb->get_var(
-                "SELECT start_date FROM {$wpdb->prefix}olama_academic_years
-                 WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-            );
+        $academic_year = null;
+        if ( function_exists( 'olama_core' ) ) {
+            $academic_year = $academic_year_id > 0
+                ? olama_core()->academic_calendar()->year( $academic_year_id )
+                : olama_core()->academic_context()->current_year();
         }
+        $date = $academic_year ? $academic_year->start_date : '';
 
         return self::sanitize_date( (string) $date );
     }
