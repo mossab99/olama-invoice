@@ -51,17 +51,11 @@ class Olama_Reg_Academic_Year_Context {
     }
 
     private static function hydrate( object $row ): object {
-        global $wpdb;
-
         $candidate = (string) ( $row->code ?? $row->year_name ?? $row->name_ar ?? '' );
         $canonical = self::normalize_code( $candidate );
         $core_year = '';
 
-        $available = $wpdb->get_col(
-            "SELECT DISTINCT study_year
-             FROM {$wpdb->prefix}olama_core_student_years
-             WHERE study_year IS NOT NULL AND study_year != ''"
-        ) ?: [];
+        $available = olama_core()->student_years()->study_years();
 
         foreach ( $available as $study_year ) {
             if ( self::normalize_code( (string) $study_year ) === $canonical ) {

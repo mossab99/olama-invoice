@@ -86,7 +86,7 @@ class Olama_Reg_Family_Financial_Summary {
         $students = $wpdb->get_results( $wpdb->prepare(
             "SELECT DISTINCT ap.student_uid, s.student_name
              FROM {$wpdb->prefix}olama_agreement_participants ap
-             LEFT JOIN {$wpdb->prefix}olama_core_students s
+             LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s
                 ON s.student_uid = ap.student_uid
                 OR (
                     s.oracle_student_id = COALESCE(NULLIF(ap.oracle_student_id, ''), ap.student_uid)
@@ -272,7 +272,7 @@ class Olama_Reg_Family_Financial_Summary {
             $student_names = $wpdb->get_col( $wpdb->prepare(
                 "SELECT DISTINCT COALESCE(s.student_name, ap.student_uid)
                  FROM {$wpdb->prefix}olama_agreement_participants ap
-                 LEFT JOIN {$wpdb->prefix}olama_core_students s
+                 LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s
                     ON s.student_uid = ap.student_uid
                     OR (
                         s.oracle_student_id = COALESCE(NULLIF(ap.oracle_student_id, ''), ap.student_uid)

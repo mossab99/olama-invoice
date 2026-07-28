@@ -44,16 +44,11 @@ class Olama_Reg_Core_Gateway {
     }
 
     public static function family_by_id( int $id ): ?object {
-        global $wpdb;
-
         if ( ! self::available() || $id <= 0 ) {
             return null;
         }
 
-        $row = $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}olama_core_families WHERE id = %d",
-            $id
-        ), ARRAY_A );
+        $row = olama_core()->families()->get_by_id( $id );
 
         return $row ? self::family_object( $row ) : null;
     }
@@ -98,8 +93,8 @@ class Olama_Reg_Core_Gateway {
 
         $rows = $wpdb->get_results( $wpdb->prepare(
             "SELECT f.*, COUNT(s.id) AS resolved_students_count
-             FROM {$wpdb->prefix}olama_core_families f
-             LEFT JOIN {$wpdb->prefix}olama_core_students s ON s.family_uid = f.family_uid
+             FROM " . olama_core()->read_models()->table( 'families' ) . " f
+             LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s ON s.family_uid = f.family_uid
              WHERE f.oracle_family_id LIKE %s
                 OR f.family_uid LIKE %s
                 OR f.sponsor_full_name LIKE %s
@@ -133,7 +128,7 @@ class Olama_Reg_Core_Gateway {
 
         $rows = $wpdb->get_results( $wpdb->prepare(
             "SELECT s.*
-             FROM {$wpdb->prefix}olama_core_students s
+             FROM " . olama_core()->read_models()->table( 'students' ) . " s
              WHERE s.student_uid LIKE %s
                 OR s.oracle_student_id LIKE %s
                 OR s.student_name LIKE %s
@@ -174,8 +169,8 @@ class Olama_Reg_Core_Gateway {
         array_push( $params, $per_page, $offset );
         $rows = $wpdb->get_results( $wpdb->prepare(
             "SELECT f.*, COUNT(s.id) AS resolved_students_count
-             FROM {$wpdb->prefix}olama_core_families f
-             LEFT JOIN {$wpdb->prefix}olama_core_students s ON s.family_uid = f.family_uid
+             FROM " . olama_core()->read_models()->table( 'families' ) . " f
+             LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s ON s.family_uid = f.family_uid
              WHERE " . implode( ' AND ', $where ) . "
              GROUP BY f.id
              ORDER BY CAST(f.oracle_family_id AS UNSIGNED) DESC
@@ -205,7 +200,7 @@ class Olama_Reg_Core_Gateway {
             $where[] = 'is_active = 0';
         }
 
-        $sql = "SELECT COUNT(*) FROM {$wpdb->prefix}olama_core_families WHERE " . implode( ' AND ', $where );
+        $sql = "SELECT COUNT(*) FROM " . olama_core()->read_models()->table( 'families' ) . " WHERE " . implode( ' AND ', $where );
         return (int) ( $params ? $wpdb->get_var( $wpdb->prepare( $sql, ...$params ) ) : $wpdb->get_var( $sql ) );
     }
 
@@ -228,11 +223,11 @@ class Olama_Reg_Core_Gateway {
         $rows = $wpdb->get_results( $wpdb->prepare(
             "SELECT s.*, y.class_name, y.section_name, y.study_year,
                     y.student_year_status
-             FROM {$wpdb->prefix}olama_core_students s
-             LEFT JOIN {$wpdb->prefix}olama_core_student_years y
+             FROM " . olama_core()->read_models()->table( 'students' ) . " s
+             LEFT JOIN " . olama_core()->read_models()->table( 'student_years' ) . " y
                 ON y.id = (
                     SELECT y2.id
-                    FROM {$wpdb->prefix}olama_core_student_years y2
+                    FROM " . olama_core()->read_models()->table( 'student_years' ) . " y2
                     WHERE y2.student_uid = s.student_uid
                     ORDER BY y2.study_year DESC, y2.id DESC
                     LIMIT 1
@@ -260,7 +255,7 @@ class Olama_Reg_Core_Gateway {
             array_push( $params, $like, $like, $like, $like );
         }
 
-        $sql = "SELECT COUNT(*) FROM {$wpdb->prefix}olama_core_students WHERE " . implode( ' AND ', $where );
+        $sql = "SELECT COUNT(*) FROM " . olama_core()->read_models()->table( 'students' ) . " WHERE " . implode( ' AND ', $where );
         return (int) ( $params ? $wpdb->get_var( $wpdb->prepare( $sql, ...$params ) ) : $wpdb->get_var( $sql ) );
     }
 

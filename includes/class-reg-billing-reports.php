@@ -327,7 +327,7 @@ class Olama_Reg_Billing_Reports {
                 u.display_name AS received_by_name
             FROM " . self::t( 'olama_payments' ) . " p
             LEFT JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = p.invoice_id
-            LEFT JOIN " . self::t( 'olama_core_students' ) . " s
+            LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s
                 ON s.student_uid = i.student_uid
                 OR (
                     s.oracle_student_id = COALESCE(NULLIF(i.oracle_student_id, ''), i.student_uid)
@@ -336,7 +336,7 @@ class Olama_Reg_Billing_Reports {
                         OR s.oracle_family_id = COALESCE(NULLIF(i.oracle_family_id, ''), i.family_uid)
                     )
                 )
-            LEFT JOIN " . self::t( 'olama_core_families' ) . " f
+            LEFT JOIN " . olama_core()->read_models()->table( 'families' ) . " f
                 ON f.family_uid = p.family_uid
                 OR f.oracle_family_id = COALESCE(NULLIF(p.oracle_family_id, ''), p.family_uid)
             LEFT JOIN " . self::t( 'olama_customers' ) . " c ON c.customer_uid = p.family_uid
@@ -691,7 +691,7 @@ class Olama_Reg_Billing_Reports {
                 COALESCE(pay.payment_debit, 0) AS payment_debit,
                 COALESCE(pay.payment_credit, 0) AS payment_credit
             FROM ({$agreement_scope}) scope
-            LEFT JOIN " . self::t( 'olama_core_families' ) . " f
+            LEFT JOIN " . olama_core()->read_models()->table( 'families' ) . " f
                 ON f.oracle_family_id = scope.family_ref
                 OR f.family_uid = scope.family_ref
                 OR (

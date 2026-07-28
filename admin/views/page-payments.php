@@ -467,7 +467,7 @@ if ($search_q) {
 $query = "SELECT p.*, i.invoice_number, COALESCE(f.sponsor_full_name, f.father_name, f.mother_name, c.customer_name, '') AS father_first_name, '' AS father_family_name, u.display_name AS received_by_name, a.account_name, cs.session_no
           FROM " . $wpdb->prefix . "olama_payments p
           LEFT JOIN " . $wpdb->prefix . "olama_invoices i ON i.id = p.invoice_id
-          LEFT JOIN " . $wpdb->prefix . "olama_core_families f
+          LEFT JOIN " . olama_core()->read_models()->table( 'families' ) . " f
             ON f.family_uid = p.family_uid
             OR (f.oracle_family_id = COALESCE(NULLIF(p.oracle_family_id, ''), p.family_uid))
           LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.customer_uid = p.family_uid OR c.id = i.ext_customer_id
@@ -488,7 +488,7 @@ if (!empty($params)) {
 $_pay_total_query = "SELECT COALESCE(SUM(p.amount),0)
           FROM " . $wpdb->prefix . "olama_payments p
           LEFT JOIN " . $wpdb->prefix . "olama_invoices i ON i.id = p.invoice_id
-          LEFT JOIN " . $wpdb->prefix . "olama_core_families f
+          LEFT JOIN " . olama_core()->read_models()->table( 'families' ) . " f
             ON f.family_uid = p.family_uid
             OR (f.oracle_family_id = COALESCE(NULLIF(p.oracle_family_id, ''), p.family_uid))
           LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.customer_uid = p.family_uid OR c.id = i.ext_customer_id

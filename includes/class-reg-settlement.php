@@ -214,7 +214,7 @@ class Olama_Reg_Settlement {
 
         $sql = "SELECT r.*, COALESCE(f.sponsor_full_name, f.father_name, f.mother_name, r.family_id) AS father_first_name, '' AS father_family_name
                 FROM {$table} r
-                LEFT JOIN {$wpdb->prefix}olama_core_families f
+                LEFT JOIN " . olama_core()->read_models()->table( 'families' ) . " f
                     ON f.family_uid = COALESCE(NULLIF(r.family_uid, ''), r.family_id)
                     OR f.oracle_family_id = COALESCE(NULLIF(r.oracle_family_id, ''), r.family_id)
                 WHERE {$where_sql} {$order_by}";

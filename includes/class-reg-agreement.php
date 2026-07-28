@@ -303,7 +303,7 @@ class Olama_Reg_Agreement {
         $family_names = [];
         if ( ! empty( $family_payer_ids ) ) {
             $family_payer_ids = array_unique( $family_payer_ids );
-            $families_table = $wpdb->prefix . 'olama_core_families';
+            $families_table = olama_core()->read_models()->table( 'families' );
             $uids_only = [];
             $ids_only = [];
             foreach ( $family_payer_ids as $fid ) {
@@ -379,7 +379,7 @@ class Olama_Reg_Agreement {
         $student_names = [];
         if ( ! empty( $student_participant_ids ) ) {
             $student_participant_ids = array_unique( $student_participant_ids );
-            $students_table = $wpdb->prefix . 'olama_core_students';
+            $students_table = olama_core()->read_models()->table( 'students' );
             $uids_only = [];
             $ids_only = [];
             foreach ( $student_participant_ids as $sid ) {

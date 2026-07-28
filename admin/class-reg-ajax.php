@@ -2735,7 +2735,7 @@ class Olama_Reg_Ajax
                          s.student_name AS direct_student_name,
                          ec.child_name AS direct_child_name
                   FROM " . $wpdb->prefix . "olama_invoices i
-                  LEFT JOIN " . $wpdb->prefix . "olama_core_families f
+                  LEFT JOIN " . olama_core()->read_models()->table( 'families' ) . " f
                     ON f.family_uid = i.family_uid
                     OR (i.oracle_family_id IS NOT NULL AND f.oracle_family_id = i.oracle_family_id)
                   LEFT JOIN " . $wpdb->prefix . "olama_customers c ON c.id = i.ext_customer_id OR c.customer_uid = i.family_uid
@@ -2748,7 +2748,7 @@ class Olama_Reg_Ajax
                       FROM " . $wpdb->prefix . "olama_invoice_adjustments
                       GROUP BY invoice_id
                   ) adj ON adj.invoice_id = i.id
-                  LEFT JOIN " . $wpdb->prefix . "olama_core_students s ON s.student_uid = i.student_uid
+                  LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s ON s.student_uid = i.student_uid
                   LEFT JOIN " . $wpdb->prefix . "olama_customer_children ec ON ec.id = i.ext_child_id
                   WHERE {$where}
                   ORDER BY i.issue_date DESC, i.id DESC
@@ -2787,7 +2787,7 @@ class Olama_Reg_Ajax
                     $covered_children = $wpdb->get_col($wpdb->prepare(
                         "SELECT DISTINCT s.student_name
                          FROM {$wpdb->prefix}olama_agreement_fees af
-                         LEFT JOIN {$wpdb->prefix}olama_core_students s
+                         LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s
                             ON s.student_uid = COALESCE(NULLIF(af.student_uid, ''), NULLIF(af.child_id, ''))
                             OR (
                                 NULLIF(af.student_uid, '') IS NULL
@@ -3821,7 +3821,7 @@ class Olama_Reg_Ajax
                     COALESCE(NULLIF(f.sponsor_full_name, ''), NULLIF(f.father_name, ''), r.family_id) AS father_first_name,
                     '' AS father_family_name
              FROM {$wpdb->prefix}olama_settlement_receipts r
-             LEFT JOIN {$wpdb->prefix}olama_core_families f
+             LEFT JOIN " . olama_core()->read_models()->table( 'families' ) . " f
                 ON f.family_uid = COALESCE(NULLIF(r.family_uid, ''), r.family_id)
                 OR f.oracle_family_id = COALESCE(NULLIF(r.oracle_family_id, ''), r.family_id)
              WHERE r.family_id = %s {$yc}
