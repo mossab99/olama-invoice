@@ -3405,7 +3405,11 @@ class Olama_Reg_Ajax
             'uid'         => $uid,
             'student_uid' => $student_uid,
         ], admin_url('admin.php'));
-        $html .= '<div class="os-hub-tile-footer"><a href="' . esc_url($report_url) . '" class="button button-small"><span class="dashicons dashicons-visibility" aria-hidden="true"></span> ' . esc_html__('عرض الكشف الكامل', 'olama-registration') . '</a></div>';
+        $print_url = add_query_arg('action', 'print_family_statement', $report_url);
+        $html .= '<div class="os-hub-tile-footer">';
+        $html .= '<a href="' . esc_url($report_url) . '" class="button button-small"><span class="dashicons dashicons-visibility" aria-hidden="true"></span> ' . esc_html__('عرض الكشف الكامل', 'olama-registration') . '</a> ';
+        $html .= '<a href="' . esc_url($print_url) . '" target="_blank" class="button button-small"><span class="dashicons dashicons-printer" aria-hidden="true"></span> ' . esc_html__('طباعة كشف الحساب', 'olama-registration') . '</a>';
+        $html .= '</div>';
         $html .= '</div>';
 
         return [
@@ -3490,11 +3494,13 @@ class Olama_Reg_Ajax
 
         // Action label map (Arabic)
         $action_labels = [
-            'created'        => __('إنشاء', 'olama-registration'),
-            'updated'        => __('تعديل', 'olama-registration'),
-            'cancelled'      => __('إلغاء', 'olama-registration'),
-            'reversed'       => __('عكس دفعة', 'olama-registration'),
-            'status_changed' => __('تغيير الحالة', 'olama-registration'),
+            'created'          => __('إنشاء', 'olama-registration'),
+            'updated'          => __('تعديل', 'olama-registration'),
+            'cancelled'        => __('إلغاء', 'olama-registration'),
+            'reversed'         => __('عكس دفعة', 'olama-registration'),
+            'status_changed'   => __('تغيير الحالة', 'olama-registration'),
+            'payment_created'  => __('إنشاء سند قبض', 'olama-registration'),
+            'payment_reversed' => __('عكس سند قبض', 'olama-registration'),
         ];
 
         // Pre-fetch user display names (batch, avoid N+1)
@@ -3525,6 +3531,19 @@ class Olama_Reg_Ajax
             }
             $r->extracted_amount = $amount;
 
+            // Describe the accounting effect of the audited operation. Audit
+            // rows store the original payment amount when a receipt is
+            // reversed, so the action determines whether it is debit/credit.
+            $movement_nature = __('غير مالية', 'olama-registration');
+            if ($r->entity_type === 'invoice' && in_array($r->action, ['created', 'updated'], true)) {
+                $movement_nature = __('مدينة', 'olama-registration');
+            } elseif ($r->entity_type === 'payment' && in_array($r->action, ['payment_created', 'created'], true)) {
+                $movement_nature = __('دائنة', 'olama-registration');
+            } elseif ($r->entity_type === 'payment' && in_array($r->action, ['payment_reversed', 'reversed'], true)) {
+                $movement_nature = __('مدينة (عكس دفعة)', 'olama-registration');
+            }
+            $r->movement_nature = $movement_nature;
+
             // Extract service type
             $stype = '';
             if ($r->entity_type === 'invoice' && !empty($after->notes)) {
@@ -3545,6 +3564,7 @@ class Olama_Reg_Ajax
             // Build dynamic description
             $note_desc = '—';
             switch ($r->action) {
+                case 'payment_created':
                 case 'created':
                     if ($r->entity_type === 'invoice') {
                         $note_desc = sprintf(__('تم إصدار الفاتورة %s بقيمة %s د.أ', 'olama-registration'), 
@@ -3581,6 +3601,7 @@ class Olama_Reg_Ajax
                         );
                     }
                     break;
+                case 'payment_reversed':
                 case 'reversed':
                     if ($r->entity_type === 'payment') {
                         $note_desc = sprintf(__('تم عكس السند المالي للفاتورة %s بقيمة %s د.أ', 'olama-registration'), 
@@ -3743,6 +3764,8 @@ class Olama_Reg_Ajax
         $html .= '<thead><tr>';
         $html .= '<th>' . __('الإجراء', 'olama-registration') . '</th>';
         $html .= '<th>' . __('المستخدم', 'olama-registration') . '</th>';
+        $html .= '<th>' . __('طبيعة الحركة', 'olama-registration') . '</th>';
+        $html .= '<th>' . __('قيمة الحركة', 'olama-registration') . '</th>';
         
         $date_active = ($orderby === 'date');
         $date_next_order = ($date_active && $order === 'desc') ? 'asc' : 'desc';
@@ -3761,6 +3784,8 @@ class Olama_Reg_Ajax
             $html .= '<tr>';
             $html .= '<td><span class="os-hub-badge os-hub-badge--blue">' . esc_html($r->action_label) . '</span></td>';
             $html .= '<td>' . esc_html($r->actor_name) . '</td>';
+            $html .= '<td>' . esc_html($r->movement_nature) . '</td>';
+            $html .= '<td dir="ltr" style="white-space:nowrap; font-weight:600;">' . ($r->extracted_amount != 0.0 ? esc_html(number_format(abs((float) $r->extracted_amount), 2)) . ' ' . esc_html__('د.أ', 'olama-registration') : '—') . '</td>';
             $html .= '<td dir="ltr" style="white-space:nowrap;">' . esc_html($date) . '</td>';
             $html .= '<td>' . $r->dynamic_desc . '</td>';
             $html .= '</tr>';

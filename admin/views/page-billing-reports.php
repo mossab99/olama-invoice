@@ -151,6 +151,88 @@ $build_url = static function ( array $args = [] ): string {
     return esc_url( add_query_arg( $args, admin_url( 'admin.php' ) ) );
 };
 
+if ( $action === 'print_family_statement' ) {
+    $school_settings = get_option( 'olama_school_settings', [] );
+    $school_name     = $school_settings['school_name_ar'] ?? get_bloginfo( 'name' );
+    $entity_name     = ! empty( $statement_entity['name'] ) ? $statement_entity['name'] : $statement_entity['uid'];
+    ?>
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title><?php esc_html_e( 'كشف الحساب', 'olama-registration' ); ?></title>
+        <style>
+            body { font-family:Tajawal, Arial, sans-serif; color:#172033; margin:28px; direction:rtl; }
+            .no-print { margin-bottom:16px; text-align:left; }
+            button { background:#6f42ff; color:#fff; border:0; border-radius:6px; padding:9px 18px; font-weight:700; cursor:pointer; }
+            h1 { margin:0 0 4px; font-size:24px; }
+            .meta { color:#64748b; margin-bottom:18px; line-height:1.8; }
+            .summary { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin:18px 0; }
+            .box { border:1px solid #d8dee9; background:#f8fafc; padding:10px; border-radius:6px; }
+            .box strong { display:block; font-size:17px; margin-top:4px; direction:ltr; }
+            .debit { color:#c62828; }
+            .credit { color:#17823b; }
+            table { width:100%; border-collapse:collapse; font-size:12px; }
+            th, td { border:1px solid #d8dee9; padding:8px; text-align:right; vertical-align:middle; }
+            th { background:#1A1A2E; color:#fff; }
+            .amount { direction:ltr; text-align:left; }
+            @media print {
+                .no-print { display:none; }
+                body { margin:0; }
+                @page { size:A4 landscape; margin:12mm; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="no-print"><button type="button" onclick="window.print();"><?php esc_html_e( 'طباعة كشف الحساب', 'olama-registration' ); ?></button></div>
+        <h1><?php esc_html_e( 'كشف الحساب', 'olama-registration' ); ?></h1>
+        <div class="meta">
+            <?php echo esc_html( $school_name ); ?> |
+            <?php echo esc_html( $entity_name ); ?>
+            <?php if ( ! empty( $statement_entity['uid'] ) ) : ?>
+                <span dir="ltr">(<?php echo esc_html( $statement_entity['uid'] ); ?>)</span>
+            <?php endif; ?> |
+            <?php esc_html_e( 'العام الدراسي:', 'olama-registration' ); ?> <?php echo esc_html( $year_label ); ?> |
+            <?php esc_html_e( 'تاريخ الطباعة:', 'olama-registration' ); ?> <?php echo esc_html( wp_date( 'Y-m-d H:i' ) ); ?>
+        </div>
+        <div class="summary">
+            <div class="box"><?php esc_html_e( 'الرصيد الافتتاحي', 'olama-registration' ); ?><strong><?php echo esc_html( $money( $statement_summary['opening_balance'] ?? 0 ) ); ?></strong></div>
+            <div class="box"><?php esc_html_e( 'إجمالي المدين', 'olama-registration' ); ?><strong class="debit"><?php echo esc_html( $money( $statement_summary['total_debit'] ?? 0 ) ); ?></strong></div>
+            <div class="box"><?php esc_html_e( 'إجمالي الدائن', 'olama-registration' ); ?><strong class="credit"><?php echo esc_html( $money( $statement_summary['total_credit'] ?? 0 ) ); ?></strong></div>
+            <div class="box"><?php esc_html_e( 'الرصيد الختامي', 'olama-registration' ); ?><strong><?php echo esc_html( $money( $statement_summary['closing_balance'] ?? 0 ) ); ?></strong></div>
+        </div>
+        <table>
+            <thead><tr>
+                <th><?php esc_html_e( 'التاريخ', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'النوع', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'المرجع', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'البيان', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'مدين', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'دائن', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'الرصيد', 'olama-registration' ); ?></th>
+            </tr></thead>
+            <tbody>
+                <?php if ( empty( $statement_rows ) ) : ?>
+                    <tr><td colspan="7"><?php esc_html_e( 'لا توجد حركات على كشف الحساب.', 'olama-registration' ); ?></td></tr>
+                <?php else : foreach ( $statement_rows as $row ) : ?>
+                    <tr>
+                        <td><?php echo esc_html( $row->movement_date ?: '—' ); ?></td>
+                        <td><?php echo esc_html( Olama_Reg_Billing_Reports::format_statement_entry_type( (string) $row->entry_type, (string) ( $row->entry_subtype ?? '' ) ) ); ?></td>
+                        <td><strong><?php echo esc_html( $row->reference_no ?: '—' ); ?></strong></td>
+                        <td><?php echo esc_html( $row->details ?: '—' ); ?></td>
+                        <td class="amount debit"><?php echo $row->debit_amount > 0 ? esc_html( $money( $row->debit_amount ) ) : '—'; ?></td>
+                        <td class="amount credit"><?php echo $row->credit_amount > 0 ? esc_html( $money( $row->credit_amount ) ) : '—'; ?></td>
+                        <td class="amount"><strong><?php echo esc_html( $money( $row->running_balance ) ); ?></strong></td>
+                    </tr>
+                <?php endforeach; endif; ?>
+            </tbody>
+        </table>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
 $export_args = [
     'page'       => 'olama-registration-reports',
     'report_tab' => 'cash_register',
@@ -908,6 +990,28 @@ function olama_reg_statement_text( string $key ): string {
                         <?php echo esc_html( olama_reg_statement_text( 'show' ) ); ?>
                     </button>
                 </div>
+                <?php if ( $statement_report['filters']['uid'] !== '' ) : ?>
+                <div class="olama-reg-field" style="justify-content:flex-end;">
+                    <a
+                        class="olama-reg-btn olama-reg-btn--secondary"
+                        target="_blank"
+                        href="<?php echo $build_url( [
+                            'page'        => 'olama-registration-reports',
+                            'report_tab'  => 'family_statement',
+                            'action'      => 'print_family_statement',
+                            'entity_type' => $statement_report['filters']['entity_type'],
+                            'uid'         => $statement_report['filters']['uid'],
+                            'year_id'     => $statement_report['filters']['year_id'],
+                            'student_uid' => $statement_report['filters']['student_uid'],
+                            'date_from'   => $statement_report['filters']['date_from'],
+                            'date_to'     => $statement_report['filters']['date_to'],
+                        ] ); ?>"
+                    >
+                        <span class="dashicons dashicons-printer"></span>
+                        <?php esc_html_e( 'طباعة كشف الحساب', 'olama-registration' ); ?>
+                    </a>
+                </div>
+                <?php endif; ?>
             </form>
         </div>
 

@@ -171,7 +171,7 @@ class Olama_Reg_Family_Financial_Summary {
                  INNER JOIN {$wpdb->prefix}olama_invoices i ON i.id = pa.invoice_id
                  WHERE {$where_alloc_child}
                    AND p.family_uid = %s
-                   AND pa.type = 'normal'
+                   AND pa.type IN ('normal', 'reversal')
                    AND (p.status IS NULL OR p.status = '' OR p.status IN ('posted', 'reversed'))
                    AND i.status != 'cancelled'
                    AND (%d = 0 OR i.academic_year_id = %d)",

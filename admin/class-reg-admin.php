@@ -430,7 +430,7 @@ class Olama_Reg_Admin {
             exit;
         }
 
-        if ( $page === 'olama-registration-reports' && in_array( $action, [ 'print_cash_register', 'export_cash_register_excel', 'export_cash_register_pdf', 'print_family_balances' ], true ) ) {
+        if ( $page === 'olama-registration-reports' && in_array( $action, [ 'print_cash_register', 'export_cash_register_excel', 'export_cash_register_pdf', 'print_family_balances', 'print_family_statement' ], true ) ) {
             if ( ! current_user_can( 'olama_manage_registration_reports' ) && ! current_user_can( 'manage_options' ) ) {
                 wp_die( __( 'Unauthorized', 'olama-registration' ) );
             }
