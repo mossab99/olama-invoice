@@ -60,6 +60,37 @@ class Olama_Reg_Financial_Account {
             'notes'           => sanitize_textarea_field( $data['notes'] ?? '' ) ?: null,
         ];
 
+        if ( $type === 'cash' && $payload['opening_balance'] < 0 ) {
+            return new \WP_Error( 'negative_cash_opening_balance', __( 'A cash account cannot have a negative opening balance.', 'olama-registration' ) );
+        }
+
+        if ( $id > 0 ) {
+            $existing = self::get( $id );
+            if ( ! $existing ) {
+                return new \WP_Error( 'account_not_found', __( 'Financial account not found.', 'olama-registration' ) );
+            }
+            $has_activity = (int) $wpdb->get_var( $wpdb->prepare(
+                "SELECT (
+                    (SELECT COUNT(*) FROM " . self::t( 'olama_cash_movements' ) . " WHERE account_id = %d) +
+                    (SELECT COUNT(*) FROM " . self::t( 'olama_payments' ) . " WHERE account_id = %d) +
+                    (SELECT COUNT(*) FROM " . self::t( 'olama_cash_sessions' ) . " WHERE account_id = %d)
+                )",
+                $id,
+                $id,
+                $id
+            ) ) > 0;
+            if ( $has_activity && (
+                $payload['type'] !== (string) $existing->type
+                || $payload['currency'] !== (string) $existing->currency
+                || abs( $payload['opening_balance'] - (float) $existing->opening_balance ) > 0.009
+            ) ) {
+                return new \WP_Error(
+                    'account_nature_locked',
+                    __( 'Account type, currency, and opening balance cannot be changed after financial activity exists.', 'olama-registration' )
+                );
+            }
+        }
+
         $duplicate = $wpdb->get_var( $wpdb->prepare(
             "SELECT id FROM " . self::t( 'olama_financial_accounts' ) . "
              WHERE account_code = %s AND id <> %d LIMIT 1",

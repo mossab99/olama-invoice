@@ -45,12 +45,32 @@ class Olama_Reg_Payment_Method_Details {
             return $policy;
         }
 
-        $invoice = Olama_Reg_Billing_Invoice::get_invoice( (int) $payment->invoice_id );
-        if ( $invoice && (float) $payment->amount > round( (float) $invoice->balance, 2 ) ) {
+        $wpdb->query( 'START TRANSACTION' );
+        $locked_invoice = $wpdb->get_row( $wpdb->prepare(
+            "SELECT id, status, balance, family_uid FROM " . self::t( 'olama_invoices' ) . " WHERE id = %d FOR UPDATE",
+            (int) $payment->invoice_id
+        ) );
+        if ( ! $locked_invoice ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'invoice_not_found', __( 'Invoice not found.', 'olama-registration' ) );
+        }
+        if ( in_array( (string) $locked_invoice->status, [ 'cancelled', 'draft' ], true ) ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'invoice_not_payable', __( 'Payments cannot be confirmed for this invoice in its current status.', 'olama-registration' ) );
+        }
+        if ( (float) $payment->amount > round( (float) $locked_invoice->balance, 2 ) ) {
+            $wpdb->query( 'ROLLBACK' );
             return new \WP_Error( 'overpayment_on_confirm', __( 'This payment is greater than the current invoice balance.', 'olama-registration' ) );
         }
 
-        $wpdb->query( 'START TRANSACTION' );
+        $locked_payment = $wpdb->get_row( $wpdb->prepare(
+            "SELECT * FROM " . self::t( 'olama_payments' ) . " WHERE id = %d FOR UPDATE",
+            $payment_id
+        ) );
+        if ( ! $locked_payment || ! in_array( (string) $locked_payment->status, [ 'draft', 'pending_review' ], true ) ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'payment_not_pending', __( 'Only a pending payment can be confirmed.', 'olama-registration' ) );
+        }
         $updated = $wpdb->update(
             self::t( 'olama_payments' ),
             [
@@ -79,6 +99,10 @@ class Olama_Reg_Payment_Method_Details {
 
         $wpdb->query( 'COMMIT' );
         self::log_audit( 'payment', $payment_id, 'payment_confirmed', $payment, self::get_payment( $payment_id ) );
+
+        if ( class_exists( 'Olama_Reg_Family_Financial_Summary' ) && ! empty( $locked_invoice->family_uid ) ) {
+            Olama_Reg_Family_Financial_Summary::invalidate_snapshot( (string) $locked_invoice->family_uid, 0 );
+        }
 
         return true;
     }

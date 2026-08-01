@@ -144,7 +144,9 @@ class Olama_Reg_Family_Financial_Summary {
                 "SELECT COALESCE(SUM(af.net_amount), 0)
                  FROM {$wpdb->prefix}olama_agreement_fees af
                  INNER JOIN {$wpdb->prefix}olama_agreements a ON a.id = af.agreement_id
-                 WHERE {$where_child} AND a.payer_id = %s AND a.status != 'cancelled' AND af.status != 'cancelled' AND (%d = 0 OR a.academic_year_id = %d)",
+                 WHERE {$where_child} AND a.payer_id = %s AND a.status != 'cancelled'
+                   AND COALESCE(af.status, '') NOT IN ('cancelled', 'cancelled_by_adjustment')
+                   AND (%d = 0 OR a.academic_year_id = %d)",
                 $family_uid,
                 $academic_year_id,
                 $academic_year_id
@@ -156,7 +158,9 @@ class Olama_Reg_Family_Financial_Summary {
                  FROM {$wpdb->prefix}olama_agreement_fees af
                  INNER JOIN {$wpdb->prefix}olama_invoices i ON i.id = af.invoice_id
                  INNER JOIN {$wpdb->prefix}olama_agreements a ON a.id = af.agreement_id
-                 WHERE {$where_child} AND a.payer_id = %s AND af.status != 'cancelled' AND i.status NOT IN ('draft', 'cancelled')
+                 WHERE {$where_child} AND a.payer_id = %s
+                   AND COALESCE(af.status, '') NOT IN ('cancelled', 'cancelled_by_adjustment')
+                   AND i.status NOT IN ('draft', 'cancelled')
                    AND (%d = 0 OR i.academic_year_id = %d)",
                 $family_uid,
                 $academic_year_id,
@@ -210,7 +214,9 @@ class Olama_Reg_Family_Financial_Summary {
                 $target_inv_fees = (float) $wpdb->get_var( $wpdb->prepare(
                     "SELECT COALESCE(SUM(af.net_amount), 0)
                      FROM {$wpdb->prefix}olama_agreement_fees af
-                     WHERE af.invoice_id = %d AND af.status != 'cancelled' AND {$where_child}",
+                     WHERE af.invoice_id = %d
+                       AND COALESCE(af.status, '') NOT IN ('cancelled', 'cancelled_by_adjustment')
+                       AND {$where_child}",
                     $inv->id
                 ) );
 
@@ -253,7 +259,10 @@ class Olama_Reg_Family_Financial_Summary {
 
         $agreements = $wpdb->get_results( $wpdb->prepare(
             "SELECT a.id AS agreement_id, a.agreement_number, a.activity_type, a.status,
-                   (SELECT COALESCE(SUM(net_amount), 0) FROM {$wpdb->prefix}olama_agreement_fees WHERE agreement_id = a.id) AS total_fees,
+                   (SELECT COALESCE(SUM(net_amount), 0)
+                    FROM {$wpdb->prefix}olama_agreement_fees
+                    WHERE agreement_id = a.id
+                      AND COALESCE(status, '') NOT IN ('cancelled', 'cancelled_by_adjustment')) AS total_fees,
                    (SELECT COALESCE(SUM(total), 0) FROM {$wpdb->prefix}olama_invoices WHERE agreement_id = a.id AND status NOT IN ('draft', 'cancelled')) AS total_invoiced,
                    (SELECT COALESCE(SUM(p.amount), 0) FROM {$wpdb->prefix}olama_payments p
                     INNER JOIN {$wpdb->prefix}olama_invoices i ON i.id = p.invoice_id

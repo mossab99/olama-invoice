@@ -155,6 +155,26 @@ class Olama_Reg_Billing_Payment {
 
         // ── Transaction: insert payment + update totals ────────────────────────
         $wpdb->query( 'START TRANSACTION' );
+
+        // Serialize posted receipts for the same invoice. Otherwise two
+        // cashiers can pass the earlier balance check at the same time.
+        $locked_invoice = $wpdb->get_row( $wpdb->prepare(
+            "SELECT id, status, balance FROM " . self::t( 'olama_invoices' ) . " WHERE id = %d FOR UPDATE",
+            $invoice_id
+        ) );
+        if ( ! $locked_invoice ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'not_found', __( 'Invoice not found.', 'olama-registration' ) );
+        }
+        if ( in_array( (string) $locked_invoice->status, [ 'cancelled', 'draft' ], true ) ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'invoice_not_payable', __( 'Payments cannot be posted to this invoice in its current status.', 'olama-registration' ) );
+        }
+        if ( $status === 'posted' && $amount > round( (float) $locked_invoice->balance, 2 ) ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'overpayment', __( 'Payment amount cannot exceed the remaining invoice balance.', 'olama-registration' ) );
+        }
+
         if ( ! self::acquire_number_lock() ) {
             $wpdb->query( 'ROLLBACK' );
             return new \WP_Error( 'number_lock_failed', __( 'Could not reserve a receipt number. Please try again.', 'olama-registration' ) );
@@ -268,7 +288,7 @@ class Olama_Reg_Billing_Payment {
             'family_uid'     => $payment->family_uid,
             'oracle_family_id' => $payment->oracle_family_id,
             'customer_id'    => $payment->customer_id,
-            'payment_date'   => date( 'Y-m-d' ),
+            'payment_date'   => current_time( 'Y-m-d' ),
             'amount'         => -1 * (float) $payment->amount,
             'method'         => 'reversal',
             'status'         => 'posted',
@@ -281,6 +301,31 @@ class Olama_Reg_Billing_Payment {
         ];
 
         $wpdb->query( 'START TRANSACTION' );
+        $locked_invoice = $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM " . self::t( 'olama_invoices' ) . " WHERE id = %d FOR UPDATE",
+            (int) $payment->invoice_id
+        ) );
+        if ( ! $locked_invoice ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'invoice_not_found', __( 'Invoice not found.', 'olama-registration' ) );
+        }
+        $locked_original = $wpdb->get_row( $wpdb->prepare(
+            "SELECT id, status FROM " . self::t( 'olama_payments' ) . " WHERE id = %d FOR UPDATE",
+            $id
+        ) );
+        if ( ! $locked_original || (string) $locked_original->status !== 'posted' ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'already_reversed', __( 'This receipt is no longer available for reversal.', 'olama-registration' ) );
+        }
+        $existing_reversal = $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM " . self::t( 'olama_payments' ) . " WHERE reversed_payment_id = %d OR reference = %s LIMIT 1",
+            $id,
+            'REVERSAL-' . $id
+        ) );
+        if ( $existing_reversal ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'already_reversed', __( 'This receipt has already been reversed.', 'olama-registration' ) );
+        }
         if ( ! self::acquire_number_lock() ) {
             $wpdb->query( 'ROLLBACK' );
             return new \WP_Error( 'number_lock_failed', __( 'Could not reserve a receipt number. Please try again.', 'olama-registration' ) );
@@ -298,7 +343,7 @@ class Olama_Reg_Billing_Payment {
 
         self::reverse_allocations( $id, $new_payment_id );
 
-        $wpdb->update(
+        $updated_original = $wpdb->update(
             self::t( 'olama_payments' ),
             [
                 'status'      => 'reversed',
@@ -307,6 +352,11 @@ class Olama_Reg_Billing_Payment {
             ],
             [ 'id' => $id ]
         );
+        if ( $updated_original === false ) {
+            self::release_number_lock();
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'db_error', $wpdb->last_error );
+        }
 
         // Recalculate invoice totals
         Olama_Reg_Billing_Invoice::recalculate_totals( (int) $payment->invoice_id );

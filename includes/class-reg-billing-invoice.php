@@ -165,12 +165,20 @@ class Olama_Reg_Billing_Invoice
             'created_by' => get_current_user_id(),
         ];
 
+        if ($payload['discount'] < 0) {
+            return new \WP_Error('invalid_discount', __('Invoice discount cannot be negative.', 'olama-registration'));
+        }
+
         // Resolve and validate every Core student before creating the invoice.
         $prepared_items = [];
         $items = is_array($data['items'] ?? null) ? $data['items'] : [];
         foreach ($items as $item) {
             $qty = self::safe_decimal($item['quantity'] ?? 1);
             $unit_price = self::safe_decimal($item['unit_price'] ?? 0);
+            $description = sanitize_text_field($item['description'] ?? '');
+            if ($description === '' || $qty <= 0 || $unit_price < 0) {
+                return new \WP_Error('invalid_invoice_item', __('Each invoice item requires a description, a positive quantity, and a non-negative price.', 'olama-registration'));
+            }
             $item_student = null;
             $item_student_uid = sanitize_text_field($item['student_uid'] ?? $identity['student_uid'] ?? '');
             if ($item_student_uid !== '') {
@@ -186,15 +194,22 @@ class Olama_Reg_Billing_Invoice
                 'oracle_student_id' => $item_student ? $item_student->oracle_student_id : null,
                 'student_name_snapshot' => $item_student ? $item_student->display_name : null,
                 'fee_category' => sanitize_text_field($item['fee_category'] ?? '') ?: null,
-                'description' => sanitize_text_field($item['description'] ?? ''),
+                'description' => $description,
                 'quantity' => $qty,
                 'unit_price' => $unit_price,
                 'line_total' => round($qty * $unit_price, 2),
             ];
         }
 
+        $prepared_subtotal = round(array_sum(array_column($prepared_items, 'line_total')), 2);
+        if ($payload['discount'] > $prepared_subtotal) {
+            return new \WP_Error('discount_exceeds_subtotal', __('Invoice discount cannot exceed its subtotal.', 'olama-registration'));
+        }
+
+        $owns_transaction = self::begin_atomic('olama_invoice_create');
         $result = $wpdb->insert(self::t('olama_invoices'), $payload);
         if (!$result) {
+            self::rollback_atomic($owns_transaction, 'olama_invoice_create');
             return new \WP_Error('db_error', $wpdb->last_error);
         }
 
@@ -203,7 +218,10 @@ class Olama_Reg_Billing_Invoice
         // Insert line items
         foreach ($prepared_items as $item) {
             $item['invoice_id'] = $invoice_id;
-            $wpdb->insert(self::t('olama_invoice_items'), $item);
+            if (!$wpdb->insert(self::t('olama_invoice_items'), $item)) {
+                self::rollback_atomic($owns_transaction, 'olama_invoice_create');
+                return new \WP_Error('db_error', $wpdb->last_error);
+            }
         }
 
         self::recalculate_totals($invoice_id);
@@ -234,8 +252,13 @@ class Olama_Reg_Billing_Invoice
             }
         }
         if ($installments > 1) {
-            self::generate_installments($invoice_id, $installments);
+            if (!self::generate_installments($invoice_id, $installments)) {
+                self::rollback_atomic($owns_transaction, 'olama_invoice_create');
+                return new \WP_Error('installments_failed', __('Could not generate the invoice installment schedule.', 'olama-registration'));
+            }
         }
+
+        self::commit_atomic($owns_transaction, 'olama_invoice_create');
 
         self::log_audit('invoice', $invoice_id, 'created', null, self::get_invoice($invoice_id));
 
@@ -354,7 +377,7 @@ class Olama_Reg_Billing_Invoice
 
         if ( isset( $data['family_uid'] ) || isset( $data['student_uid'] ) ) {
             $identity_input = array_merge( (array) $before, $data );
-            $identity = self::resolve_identity( $identity_input );
+            $identity = self::resolve_payer_context( $identity_input );
             if ( is_wp_error( $identity ) ) {
                 return $identity;
             }
@@ -388,31 +411,78 @@ class Olama_Reg_Billing_Invoice
         if (isset($data['notes']))
             $payload['notes'] = sanitize_textarea_field($data['notes']);
 
+        if (isset($payload['discount']) && $payload['discount'] < 0) {
+            return new \WP_Error('invalid_discount', __('Invoice discount cannot be negative.', 'olama-registration'));
+        }
+
+        $prepared_update_items = null;
+        if (isset($data['items']) && is_array($data['items'])) {
+            $prepared_update_items = [];
+            foreach ($data['items'] as $item) {
+                $qty = self::safe_decimal($item['quantity'] ?? 1);
+                $unit_price = self::safe_decimal($item['unit_price'] ?? 0);
+                $description = sanitize_text_field($item['description'] ?? '');
+                if ($description === '' || $qty <= 0 || $unit_price < 0) {
+                    return new \WP_Error('invalid_invoice_item', __('Each invoice item requires a description, a positive quantity, and a non-negative price.', 'olama-registration'));
+                }
+                $item_student = null;
+                $item_student_uid = sanitize_text_field($item['student_uid'] ?? '');
+                if ($item_student_uid !== '') {
+                    $item_student = Olama_Reg_Core_Gateway::student($item_student_uid);
+                    $invoice_family_uid = (string) ($payload['family_uid'] ?? $before->family_uid ?? '');
+                    if (!$item_student || ($invoice_family_uid !== '' && $item_student->family_uid !== $invoice_family_uid)) {
+                        return new \WP_Error('invalid_student', __('The selected student does not belong to this family.', 'olama-registration'));
+                    }
+                }
+                $prepared_update_items[] = [
+                    'invoice_id' => $id,
+                    'agreement_fee_id' => absint($item['agreement_fee_id'] ?? 0) ?: null,
+                    'student_uid' => $item_student ? $item_student->student_uid : null,
+                    'oracle_student_id' => $item_student ? $item_student->oracle_student_id : null,
+                    'student_name_snapshot' => $item_student ? $item_student->display_name : null,
+                    'fee_category' => sanitize_text_field($item['fee_category'] ?? '') ?: null,
+                    'description' => $description,
+                    'quantity' => $qty,
+                    'unit_price' => $unit_price,
+                    'line_total' => round($qty * $unit_price, 2),
+                ];
+            }
+            $new_subtotal = round(array_sum(array_column($prepared_update_items, 'line_total')), 2);
+            $new_discount = isset($payload['discount']) ? (float) $payload['discount'] : (float) $before->discount;
+            if ($new_discount > $new_subtotal) {
+                return new \WP_Error('discount_exceeds_subtotal', __('Invoice discount cannot exceed its subtotal.', 'olama-registration'));
+            }
+        } elseif (isset($payload['discount']) && $payload['discount'] > (float) $before->subtotal) {
+            return new \WP_Error('discount_exceeds_subtotal', __('Invoice discount cannot exceed its subtotal.', 'olama-registration'));
+        }
+
+        $owns_transaction = self::begin_atomic('olama_invoice_update');
         if (!empty($payload)) {
             $result = $wpdb->update(self::t('olama_invoices'), $payload, ['id' => $id]);
             if (false === $result) {
+                self::rollback_atomic($owns_transaction, 'olama_invoice_update');
                 return new \WP_Error('db_error', $wpdb->last_error);
             }
         }
 
         // Re-insert items if provided
-        if (isset($data['items']) && is_array($data['items'])) {
-            $wpdb->delete(self::t('olama_invoice_items'), ['invoice_id' => $id]);
-            foreach ($data['items'] as $item) {
-                $qty = self::safe_decimal($item['quantity'] ?? 1);
-                $unit_price = self::safe_decimal($item['unit_price'] ?? 0);
-                $wpdb->insert(self::t('olama_invoice_items'), [
-                    'invoice_id' => $id,
-                    'description' => sanitize_text_field($item['description'] ?? ''),
-                    'quantity' => $qty,
-                    'unit_price' => $unit_price,
-                    'line_total' => round($qty * $unit_price, 2),
-                ]);
+        if ($prepared_update_items !== null) {
+            if (false === $wpdb->delete(self::t('olama_invoice_items'), ['invoice_id' => $id])) {
+                self::rollback_atomic($owns_transaction, 'olama_invoice_update');
+                return new \WP_Error('db_error', $wpdb->last_error);
+            }
+            foreach ($prepared_update_items as $item) {
+                if (!$wpdb->insert(self::t('olama_invoice_items'), $item)) {
+                    self::rollback_atomic($owns_transaction, 'olama_invoice_update');
+                    return new \WP_Error('db_error', $wpdb->last_error);
+                }
             }
             self::recalculate_totals($id);
         } elseif (isset($data['discount']) || isset($data['status'])) {
             self::recalculate_totals($id);
         }
+
+        self::commit_atomic($owns_transaction, 'olama_invoice_update');
 
         self::log_audit('invoice', $id, 'updated', $before, self::get_invoice($id));
 
@@ -678,7 +748,7 @@ class Olama_Reg_Billing_Invoice
             return new \WP_Error('not_found', __('Invoice not found.', 'olama-registration'));
         }
 
-        if ((float) $inv->amount_paid > 0 || self::has_payment_records($id)) {
+        if (abs((float) $inv->amount_paid) > 0.009 || self::has_pending_payment_records($id)) {
             return new \WP_Error('has_payments', __('لا يمكن إلغاء الفاتورة لأنها تحتوي على سندات قبض. يجب عكس السندات أولاً.', 'olama-registration'));
         }
 
@@ -758,7 +828,7 @@ class Olama_Reg_Billing_Invoice
                 $status = 'paid';
             } elseif ($amount_paid > 0) {
                 $status = 'partial';
-            } elseif (!empty($inv->due_date) && $inv->due_date < date('Y-m-d')) {
+            } elseif (!empty($inv->due_date) && $inv->due_date < current_time('Y-m-d')) {
                 $status = 'overdue';
             } else {
                 $status = 'issued';
@@ -796,6 +866,14 @@ class Olama_Reg_Billing_Invoice
 
         if (!$inv)
             return false;
+
+        $has_payment_history = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::t('olama_payments') . " WHERE invoice_id = %d",
+            $id
+        )) > 0;
+        if ($has_payment_history) {
+            return false;
+        }
 
         if ($count < 1) {
             // Read from fee_template if set
@@ -895,7 +973,7 @@ class Olama_Reg_Billing_Invoice
         if ((string) ($invoice->status ?? '') === 'cancelled') {
             return new \WP_Error('already_cancelled', __('الفاتورة ملغاة مسبقاً.', 'olama-registration'));
         }
-        if ((float) ($invoice->amount_paid ?? 0) > 0 || self::has_payment_records((int) ($invoice->id ?? 0))) {
+        if (abs((float) ($invoice->amount_paid ?? 0)) > 0.009 || self::has_pending_payment_records((int) ($invoice->id ?? 0))) {
             return new \WP_Error('has_payments', __('لا يمكن إلغاء الفاتورة لأنها تحتوي على سندات قبض. يجب عكس السندات أولاً.', 'olama-registration'));
         }
         if (self::has_active_adjustments((int) $invoice->id)) {
@@ -1014,11 +1092,29 @@ class Olama_Reg_Billing_Invoice
         }
 
         $before = self::get_invoice((int) $adjustment->invoice_id);
-        $wpdb->update(self::t('olama_invoice_adjustments'), [
+        if (!$before) {
+            return new \WP_Error('invoice_not_found', __('Invoice not found.', 'olama-registration'));
+        }
+
+        if ($adjustment->type === 'debit') {
+            $effective_total = round((float) $before->amount_paid + (float) $before->balance, 2);
+            $new_effective_total = round($effective_total - (float) $adjustment->amount, 2);
+            if ((float) $before->amount_paid > $new_effective_total + 0.009) {
+                return new \WP_Error(
+                    'adjustment_cancellation_creates_overpayment',
+                    __('This debit note cannot be cancelled because the posted receipts would exceed the resulting invoice total. Reverse or refund the excess first.', 'olama-registration')
+                );
+            }
+        }
+
+        $updated = $wpdb->update(self::t('olama_invoice_adjustments'), [
             'status' => 'cancelled',
             'cancelled_by' => get_current_user_id(),
             'cancelled_at' => current_time('mysql'),
         ], ['id' => $adjustment_id]);
+        if ($updated === false) {
+            return new \WP_Error('db_error', $wpdb->last_error);
+        }
 
         self::recalculate_totals((int) $adjustment->invoice_id);
         self::log_audit('invoice_adjustment', $adjustment_id, 'adjustment_cancelled', $before, self::get_invoice((int) $adjustment->invoice_id));
@@ -1217,6 +1313,24 @@ class Olama_Reg_Billing_Invoice
         )) > 0;
     }
 
+    /** Pending receipts must be resolved before cancellation; fully reversed
+     * posted history may remain attached as an immutable audit trail. */
+    private static function has_pending_payment_records(int $invoice_id): bool
+    {
+        global $wpdb;
+        if ($invoice_id <= 0) {
+            return false;
+        }
+
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*)
+             FROM " . self::t('olama_payments') . "
+             WHERE invoice_id = %d
+               AND status IN ('draft', 'pending_review')",
+            $invoice_id
+        )) > 0;
+    }
+
     private static function effective_total(object $invoice): float
     {
         $debit = (float) ($invoice->debit_notes_total ?? 0);
@@ -1263,18 +1377,18 @@ class Olama_Reg_Billing_Invoice
 
         foreach ((array) ($invoice->installments ?? []) as $inst) {
             $remaining = (float) ($inst->amount_due ?? 0) - (float) ($inst->amount_paid ?? 0);
-            if (!empty($inst->due_date) && $inst->due_date < date('Y-m-d') && $remaining > 0.009) {
+            if (!empty($inst->due_date) && $inst->due_date < current_time('Y-m-d') && $remaining > 0.009) {
                 return true;
             }
         }
 
-        return !empty($invoice->due_date) && $invoice->due_date < date('Y-m-d') && (float) ($invoice->balance ?? 0) > 0.009;
+        return !empty($invoice->due_date) && $invoice->due_date < current_time('Y-m-d') && (float) ($invoice->balance ?? 0) > 0.009;
     }
 
     private static function generate_adjustment_number(string $type): string
     {
         global $wpdb;
-        $prefix = ($type === 'credit' ? 'CRN-' : 'DBN-') . date('Y') . '-';
+        $prefix = ($type === 'credit' ? 'CRN-' : 'DBN-') . current_time('Y') . '-';
         $max = (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COALESCE(MAX(CAST(SUBSTRING(adjustment_no, %d) AS UNSIGNED)), 0)
              FROM " . self::t('olama_invoice_adjustments') . "
@@ -1325,5 +1439,33 @@ class Olama_Reg_Billing_Invoice
     private static function safe_decimal($val): float
     {
         return round((float) $val, 2);
+    }
+
+    /**
+     * Start an atomic section without committing a transaction owned by a
+     * higher-level workflow (for example agreement completion).
+     */
+    private static function begin_atomic(string $savepoint): bool
+    {
+        global $wpdb;
+        $in_transaction = (int) $wpdb->get_var('SELECT @@in_transaction');
+        if ($in_transaction) {
+            $wpdb->query('SAVEPOINT ' . $savepoint);
+            return false;
+        }
+        $wpdb->query('START TRANSACTION');
+        return true;
+    }
+
+    private static function commit_atomic(bool $owns_transaction, string $savepoint): void
+    {
+        global $wpdb;
+        $wpdb->query($owns_transaction ? 'COMMIT' : 'RELEASE SAVEPOINT ' . $savepoint);
+    }
+
+    private static function rollback_atomic(bool $owns_transaction, string $savepoint): void
+    {
+        global $wpdb;
+        $wpdb->query($owns_transaction ? 'ROLLBACK' : 'ROLLBACK TO SAVEPOINT ' . $savepoint);
     }
 }

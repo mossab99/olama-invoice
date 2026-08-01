@@ -184,10 +184,23 @@ class Olama_Reg_Agreement_Invoice {
             ];
         }
 
-        $wpdb->delete( self::t( 'olama_invoice_installments' ), [ 'agreement_id' => $agreement_id ] );
+        $schedule_total = round( array_sum( array_column( $clean, 'amount_due' ) ), 2 );
+        $agreement_total = round( (float) $agreement->total_amount, 2 );
+        if ( abs( $schedule_total - $agreement_total ) > 0.009 ) {
+            return new \WP_Error(
+                'schedule_total_mismatch',
+                __( 'The installment schedule total must equal the agreement net total.', 'olama-registration' )
+            );
+        }
+
+        $owns_transaction = self::begin_atomic( 'olama_due_schedule' );
+        if ( false === $wpdb->delete( self::t( 'olama_invoice_installments' ), [ 'agreement_id' => $agreement_id ] ) ) {
+            self::rollback_atomic( $owns_transaction, 'olama_due_schedule' );
+            return new \WP_Error( 'db_error', $wpdb->last_error );
+        }
 
         foreach ( $clean as $line ) {
-            $wpdb->insert( self::t( 'olama_invoice_installments' ), [
+            $inserted = $wpdb->insert( self::t( 'olama_invoice_installments' ), [
                 'invoice_id'      => $invoice_id,
                 'agreement_id'    => $agreement_id,
                 'installment_no'  => $line['installment_no'],
@@ -196,7 +209,13 @@ class Olama_Reg_Agreement_Invoice {
                 'amount_paid'     => 0.00,
                 'status'          => self::initial_due_status( $line['due_date'] ),
             ] );
+            if ( ! $inserted ) {
+                self::rollback_atomic( $owns_transaction, 'olama_due_schedule' );
+                return new \WP_Error( 'db_error', $wpdb->last_error );
+            }
         }
+
+        self::commit_atomic( $owns_transaction, 'olama_due_schedule' );
 
         return true;
     }
@@ -512,7 +531,7 @@ class Olama_Reg_Agreement_Invoice {
             $errors[] = __( 'تاريخ نهاية العقد لا يمكن أن يكون قبل تاريخ البداية.', 'olama-registration' );
         }
 
-        $fees = Olama_Reg_Agreement_Fees::get_by_agreement( $agreement_id );
+        $fees = Olama_Reg_Agreement_Fees::get_billable_by_agreement( $agreement_id );
         if ( empty( $fees ) ) {
             $errors[] = __( 'يجب إضافة بند رسوم واحد على الأقل.', 'olama-registration' );
         }
@@ -568,7 +587,7 @@ class Olama_Reg_Agreement_Invoice {
             [ '%d' ]
         );
 
-        $fees = Olama_Reg_Agreement_Fees::get_by_agreement( $agreement_id );
+        $fees = Olama_Reg_Agreement_Fees::get_billable_by_agreement( $agreement_id );
         foreach ( $fees as $fee ) {
             Olama_Reg_Agreement_Fees::mark_invoiced( (int) $fee->id, (int) $invoice_id );
         }
@@ -596,7 +615,17 @@ class Olama_Reg_Agreement_Invoice {
             return new \WP_Error( 'invoice_has_payments', __( 'لا يمكن تعديل فاتورة مرتبطة بمدفوعات. يلزم إجراء تسوية أو إشعار دائن.', 'olama-registration' ) );
         }
 
-        $fees = Olama_Reg_Agreement_Fees::get_by_agreement( $agreement_id );
+        $fees = Olama_Reg_Agreement_Fees::get_billable_by_agreement( $agreement_id );
+        if ( $fee_ids ) {
+            $requested_fee_ids = array_values( array_unique( array_filter( array_map( 'absint', $fee_ids ) ) ) );
+            $fees = array_values( array_filter(
+                $fees,
+                static fn( $fee ) => in_array( (int) $fee->id, $requested_fee_ids, true )
+            ) );
+            if ( count( $fees ) !== count( $requested_fee_ids ) ) {
+                return new \WP_Error( 'invalid_fee_selection', __( 'One or more selected fees do not belong to this agreement or are no longer billable.', 'olama-registration' ) );
+            }
+        }
         if ( empty( $fees ) ) {
             return new \WP_Error( 'no_fees', __( 'لا توجد رسوم صالحة للفوترة.', 'olama-registration' ) );
         }
@@ -736,5 +765,25 @@ class Olama_Reg_Agreement_Invoice {
     private static function sanitize_date( string $val ): string {
         $raw = sanitize_text_field( $val );
         return preg_match( '/^\d{4}-\d{2}-\d{2}$/', $raw ) ? $raw : '';
+    }
+
+    private static function begin_atomic( string $savepoint ): bool {
+        global $wpdb;
+        if ( (int) $wpdb->get_var( 'SELECT @@in_transaction' ) ) {
+            $wpdb->query( 'SAVEPOINT ' . $savepoint );
+            return false;
+        }
+        $wpdb->query( 'START TRANSACTION' );
+        return true;
+    }
+
+    private static function commit_atomic( bool $owns_transaction, string $savepoint ): void {
+        global $wpdb;
+        $wpdb->query( $owns_transaction ? 'COMMIT' : 'RELEASE SAVEPOINT ' . $savepoint );
+    }
+
+    private static function rollback_atomic( bool $owns_transaction, string $savepoint ): void {
+        global $wpdb;
+        $wpdb->query( $owns_transaction ? 'ROLLBACK' : 'ROLLBACK TO SAVEPOINT ' . $savepoint );
     }
 }

@@ -35,6 +35,11 @@ class Olama_Reg_Agreement_Fees {
         ];
 
         $insert_data = wp_parse_args( $data, $defaults );
+        $insert_data['amount'] = round( (float) $insert_data['amount'], 2 );
+        $insert_data['discount'] = round( (float) $insert_data['discount'], 2 );
+        if ( $insert_data['amount'] < 0 || $insert_data['discount'] < 0 || $insert_data['discount'] > $insert_data['amount'] ) {
+            return false;
+        }
         $insert_data = self::normalize_participant_fields( $agreement_id, $insert_data );
         if ( $insert_data === false ) {
             return false;
@@ -44,10 +49,9 @@ class Olama_Reg_Agreement_Fees {
             $agreement_id
         );
         
-        // Auto-calculate net if not explicitly provided
-        if ( ! isset( $data['net_amount'] ) ) {
-            $insert_data['net_amount'] = max( 0, (float) $insert_data['amount'] - (float) $insert_data['discount'] );
-        }
+        // The net amount is always derived server-side. Accepting a caller's
+        // value would allow amount/discount/net to contradict each other.
+        $insert_data['net_amount'] = round( $insert_data['amount'] - $insert_data['discount'], 2 );
 
         $inserted = $wpdb->insert( $table, $insert_data );
 
@@ -84,7 +88,7 @@ class Olama_Reg_Agreement_Fees {
         }
 
         // Remove un-updatable fields
-        unset( $data['id'], $data['agreement_id'], $data['invoice_id'], $data['paid_status'] );
+        unset( $data['id'], $data['agreement_id'], $data['invoice_id'], $data['paid_status'], $data['net_amount'], $data['status'] );
         $data = self::normalize_participant_fields( (int) $existing->agreement_id, $data );
         if ( $data === false ) {
             return false;
@@ -98,9 +102,14 @@ class Olama_Reg_Agreement_Fees {
 
         // Recalculate net_amount if amount or discount changed
         if ( isset( $data['amount'] ) || isset( $data['discount'] ) ) {
-            $amt = isset( $data['amount'] ) ? (float) $data['amount'] : (float) $existing->amount;
-            $dsc = isset( $data['discount'] ) ? (float) $data['discount'] : (float) $existing->discount;
-            $data['net_amount'] = max( 0, $amt - $dsc );
+            $amt = round( isset( $data['amount'] ) ? (float) $data['amount'] : (float) $existing->amount, 2 );
+            $dsc = round( isset( $data['discount'] ) ? (float) $data['discount'] : (float) $existing->discount, 2 );
+            if ( $amt < 0 || $dsc < 0 || $dsc > $amt ) {
+                return false;
+            }
+            $data['amount'] = $amt;
+            $data['discount'] = $dsc;
+            $data['net_amount'] = round( $amt - $dsc, 2 );
         }
 
         $updated = $wpdb->update( $table, $data, [ 'id' => $fee_id ] );
@@ -192,6 +201,19 @@ class Olama_Reg_Agreement_Fees {
         global $wpdb;
         $table = $wpdb->prefix . 'olama_agreement_fees';
         $wpdb->update( $table, [ 'paid_status' => 'paid' ], [ 'id' => $fee_id ] );
+    }
+
+    /** Return only fee rows that still have a financial effect. */
+    public static function get_billable_by_agreement( int $agreement_id ): array {
+        global $wpdb;
+        $table = $wpdb->prefix . 'olama_agreement_fees';
+        return $wpdb->get_results( $wpdb->prepare(
+            "SELECT * FROM {$table}
+             WHERE agreement_id = %d
+               AND COALESCE(status, '') NOT IN ('cancelled', 'cancelled_by_adjustment')
+             ORDER BY sort_order ASC, id ASC",
+            $agreement_id
+        ) ) ?: [];
     }
 
     private static function normalize_participant_fields( int $agreement_id, array $data ): array|false {

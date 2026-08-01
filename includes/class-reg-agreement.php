@@ -528,7 +528,9 @@ class Olama_Reg_Agreement {
         $agr_table  = $wpdb->prefix . 'olama_agreements';
 
         $total = (float) $wpdb->get_var( $wpdb->prepare(
-            "SELECT SUM(net_amount) FROM {$fees_table} WHERE agreement_id = %d",
+            "SELECT COALESCE(SUM(net_amount), 0) FROM {$fees_table}
+             WHERE agreement_id = %d
+               AND COALESCE(status, '') NOT IN ('cancelled', 'cancelled_by_adjustment')",
             $id
         ) );
 

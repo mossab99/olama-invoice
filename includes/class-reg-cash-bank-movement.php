@@ -161,6 +161,26 @@ class Olama_Reg_Cash_Bank_Movement {
         ];
 
         $wpdb->query( 'START TRANSACTION' );
+
+        // Lock both accounts in a stable order, then recheck the source
+        // balance while locked to prevent concurrent transfers overdrawing it.
+        $lock_ids = [ $from_account_id, $to_account_id ];
+        sort( $lock_ids, SORT_NUMERIC );
+        foreach ( $lock_ids as $lock_id ) {
+            $locked = $wpdb->get_var( $wpdb->prepare(
+                "SELECT id FROM " . self::t( 'olama_financial_accounts' ) . " WHERE id = %d FOR UPDATE",
+                $lock_id
+            ) );
+            if ( ! $locked ) {
+                $wpdb->query( 'ROLLBACK' );
+                return new \WP_Error( 'invalid_account', __( 'Please choose two active financial accounts.', 'olama-registration' ) );
+            }
+        }
+        if ( self::get_account_balance( $from_account_id ) < $amount ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new \WP_Error( 'insufficient_funds', __( 'The source account does not have enough balance for this transfer.', 'olama-registration' ) );
+        }
+
         $inserted = $wpdb->insert( self::t( 'olama_account_transfers' ), $payload );
         if ( ! $inserted ) {
             $wpdb->query( 'ROLLBACK' );
@@ -179,6 +199,17 @@ class Olama_Reg_Cash_Bank_Movement {
         if ( (string) $to_account->type === 'cash' ) {
             $session = Olama_Reg_Cash_Session::get_open_session( $to_account_id, get_current_user_id() );
             $to_cash_session_id = $session ? (int) $session->id : null;
+        }
+
+        if ( get_option( 'olama_require_cash_session', '0' ) === '1' ) {
+            if ( (string) $from_account->type === 'cash' && ! $from_cash_session_id ) {
+                $wpdb->query( 'ROLLBACK' );
+                return new \WP_Error( 'missing_cash_session', __( 'A source cash session must be open before transferring cash.', 'olama-registration' ) );
+            }
+            if ( (string) $to_account->type === 'cash' && ! $to_cash_session_id ) {
+                $wpdb->query( 'ROLLBACK' );
+                return new \WP_Error( 'missing_cash_session', __( 'A destination cash session must be open before receiving transferred cash.', 'olama-registration' ) );
+            }
         }
 
         $out = self::record_movement( [
