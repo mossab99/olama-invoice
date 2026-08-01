@@ -244,7 +244,7 @@ class Olama_Reg_Billing_Reports {
 
         $rows = $wpdb->get_col(
             "SELECT DISTINCT method FROM " . self::t( 'olama_payments' ) . "
-             WHERE method IS NOT NULL AND method != ''
+             WHERE method IS NOT NULL AND method != '' AND method != 'reversal'
              ORDER BY method ASC"
         ) ?: [];
 
@@ -284,7 +284,9 @@ class Olama_Reg_Billing_Reports {
         $method      = sanitize_text_field( $filters['method'] ?? '' );
         $cashier_id  = absint( $filters['cashier_id'] ?? 0 );
 
-		$where  = [ "p.amount > 0", "p.method != 'reversal'", "(p.status IS NULL OR p.status = '' OR p.status = 'posted')" ];
+        $is_reversal_sql = "(p.method = 'reversal' OR p.amount < 0 OR p.reversed_payment_id IS NOT NULL)";
+        $report_method_sql = "COALESCE(NULLIF(CASE WHEN {$is_reversal_sql} THEN orig.method ELSE p.method END, ''), 'other')";
+        $where  = [ "p.amount != 0", "(p.status IS NULL OR p.status = '' OR p.status IN ('posted', 'reversed'))" ];
         $params = [];
 
         if ( $year_id > 0 ) {
@@ -300,7 +302,7 @@ class Olama_Reg_Billing_Reports {
             $params[] = $date_to;
         }
         if ( $method !== '' ) {
-            $where[]  = "p.method = %s";
+            $where[]  = "{$report_method_sql} = %s";
             $params[] = $method;
         }
         if ( $cashier_id > 0 ) {
@@ -312,9 +314,15 @@ class Olama_Reg_Billing_Reports {
 
         $query = "SELECT
                 p.id,
+                p.payment_no,
                 p.payment_date,
                 p.method,
-                p.amount,
+                {$report_method_sql} AS report_method,
+                CASE WHEN {$is_reversal_sql} THEN 'reversal' ELSE 'receipt' END AS movement_nature,
+                CASE WHEN {$is_reversal_sql}
+                     THEN -ABS(CAST(p.amount AS DECIMAL(18,2)))
+                     ELSE ABS(CAST(p.amount AS DECIMAL(18,2)))
+                END AS amount,
                 p.reference,
                 p.notes,
                 p.received_by,
@@ -326,6 +334,7 @@ class Olama_Reg_Billing_Reports {
                 COALESCE(i.student_uid, ec.child_uid, p.family_uid) AS student_identifier,
                 u.display_name AS received_by_name
             FROM " . self::t( 'olama_payments' ) . " p
+            LEFT JOIN " . self::t( 'olama_payments' ) . " orig ON orig.id = p.reversed_payment_id
             LEFT JOIN " . self::t( 'olama_invoices' ) . " i ON i.id = p.invoice_id
             LEFT JOIN " . olama_core()->read_models()->table( 'students' ) . " s
                 ON s.student_uid = i.student_uid
@@ -362,7 +371,7 @@ class Olama_Reg_Billing_Reports {
 
         foreach ( $rows as $row ) {
             $amount = (float) $row->amount;
-            $method_key = (string) $row->method;
+            $method_key = (string) $row->report_method;
             if ( isset( $summary[ $method_key ] ) ) {
                 $summary[ $method_key ] += $amount;
             } else {

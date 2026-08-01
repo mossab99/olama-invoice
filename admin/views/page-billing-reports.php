@@ -260,7 +260,8 @@ if ( $action === 'export_cash_register_excel' ) {
                 <th><?php esc_html_e( 'ط±ظ‚ظ… ط§ظ„ط·ط§ظ„ط¨', 'olama-registration' ); ?></th>
                 <th><?php esc_html_e( 'طھط§ط±ظٹط® ط§ظ„ظ‚ط¨ط¶', 'olama-registration' ); ?></th>
                 <th><?php esc_html_e( 'ط·ط±ظٹظ‚ط© ط§ظ„ط¯ظپط¹', 'olama-registration' ); ?></th>
-                <th><?php esc_html_e( 'ط§ظ„ظ…ط¨ظ„ط؛ ط§ظ„ظ…ظ‚ط¨ظˆط¶', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'طبيعة الحركة', 'olama-registration' ); ?></th>
+                <th><?php esc_html_e( 'قيمة الحركة', 'olama-registration' ); ?></th>
                 <th><?php esc_html_e( 'ط±ظ‚ظ… ط§ظ„ظ…ط±ط¬ط¹', 'olama-registration' ); ?></th>
                 <th><?php esc_html_e( 'ظ…ظ„ط§ط­ط¸ط§طھ', 'olama-registration' ); ?></th>
                 <th><?php esc_html_e( 'ط§ظ„ظ…ط³طھظ„ظ…', 'olama-registration' ); ?></th>
@@ -273,8 +274,9 @@ if ( $action === 'export_cash_register_excel' ) {
                     <td><?php echo esc_html( $row->student_name ?: 'â€”' ); ?></td>
                     <td><?php echo esc_html( $row->student_identifier ?: 'â€”' ); ?></td>
                     <td><?php echo esc_html( $row->payment_date ); ?></td>
-                    <td><?php echo esc_html( $method_labels[ $row->method ] ?? $row->method ); ?></td>
-                    <td><?php echo esc_html( $money( $row->amount ) ); ?></td>
+                    <td><?php echo esc_html( $method_labels[ $row->report_method ] ?? $row->report_method ); ?></td>
+                    <td><?php echo $row->movement_nature === 'reversal' ? esc_html__( 'عكس سند قبض', 'olama-registration' ) : esc_html__( 'سند قبض', 'olama-registration' ); ?></td>
+                    <td style="color:<?php echo $row->amount < 0 ? '#c62828' : '#17823b'; ?>;" dir="ltr"><?php echo esc_html( $money( $row->amount ) ); ?></td>
                     <td><?php echo esc_html( $row->reference ?: 'â€”' ); ?></td>
                     <td><?php echo esc_html( $row->notes ?: 'â€”' ); ?></td>
                     <td><?php echo esc_html( $row->received_by_name ?: 'â€”' ); ?></td>
@@ -436,7 +438,8 @@ function olama_reg_render_cash_register_table( array $rows, array $method_labels
                     <th><?php esc_html_e( 'ط±ظ‚ظ… ط§ظ„ط·ط§ظ„ط¨', 'olama-registration' ); ?></th>
                     <th><?php esc_html_e( 'طھط§ط±ظٹط® ط§ظ„ظ‚ط¨ط¶', 'olama-registration' ); ?></th>
                     <th><?php esc_html_e( 'ط·ط±ظٹظ‚ط© ط§ظ„ط¯ظپط¹', 'olama-registration' ); ?></th>
-                    <th><?php esc_html_e( 'ط§ظ„ظ…ط¨ظ„ط؛ ط§ظ„ظ…ظ‚ط¨ظˆط¶', 'olama-registration' ); ?></th>
+                    <th><?php esc_html_e( 'طبيعة الحركة', 'olama-registration' ); ?></th>
+                    <th><?php esc_html_e( 'قيمة الحركة', 'olama-registration' ); ?></th>
                     <th><?php esc_html_e( 'ط±ظ‚ظ… ط§ظ„ظ…ط±ط¬ط¹', 'olama-registration' ); ?></th>
                     <th><?php esc_html_e( 'ظ…ظ„ط§ط­ط¸ط§طھ', 'olama-registration' ); ?></th>
                     <th><?php esc_html_e( 'ط§ظ„ظ…ط³طھظ„ظ…', 'olama-registration' ); ?></th>
@@ -445,7 +448,7 @@ function olama_reg_render_cash_register_table( array $rows, array $method_labels
             <tbody>
                 <?php if ( empty( $rows ) ) : ?>
                     <tr>
-                        <td colspan="9" class="olama-reg-empty-state">
+                        <td colspan="10" class="olama-reg-empty-state">
                             <?php esc_html_e( 'ظ„ط§ طھظˆط¬ط¯ ط­ط±ظƒط§طھ ظ‚ط¨ط¶ ظ…ط·ط§ط¨ظ‚ط© ظ„ظ„ظپظ„ط§طھط± ط§ظ„ظ…ط­ط¯ط¯ط©.', 'olama-registration' ); ?>
                         </td>
                     </tr>
@@ -456,8 +459,9 @@ function olama_reg_render_cash_register_table( array $rows, array $method_labels
                             <td><?php echo esc_html( $row->student_name ?: 'â€”' ); ?></td>
                             <td><span class="olama-reg-uid-badge"><?php echo esc_html( $row->student_identifier ?: 'â€”' ); ?></span></td>
                             <td><?php echo esc_html( $row->payment_date ); ?></td>
-                            <td><?php echo esc_html( $method_labels[ $row->method ] ?? $row->method ); ?></td>
-                            <td class="olama-reg-text--success"><?php echo esc_html( $money( $row->amount ) ); ?></td>
+                            <td><?php echo esc_html( $method_labels[ $row->report_method ] ?? $row->report_method ); ?></td>
+                            <td><?php echo $row->movement_nature === 'reversal' ? esc_html__( 'عكس سند قبض', 'olama-registration' ) : esc_html__( 'سند قبض', 'olama-registration' ); ?></td>
+                            <td style="color:<?php echo $row->amount < 0 ? '#c62828' : '#17823b'; ?>; font-weight:600;" dir="ltr"><?php echo esc_html( $money( $row->amount ) ); ?></td>
                             <td><?php echo esc_html( $row->reference ?: 'â€”' ); ?></td>
                             <td><?php echo esc_html( $row->notes ?: 'â€”' ); ?></td>
                             <td><?php echo esc_html( $row->received_by_name ?: 'â€”' ); ?></td>
