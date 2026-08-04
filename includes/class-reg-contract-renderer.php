@@ -245,24 +245,32 @@ HTML;
                 (int) ( $agreement->academic_year_id ?? 0 )
             );
 
+            $students = [];
             if ( $student_uids ) {
-                foreach ( $family_students as $family_student ) {
-                    if ( (string) $family_student->student_uid === $student_uids[0] ) {
-                        $student = $family_student;
-                        break;
+                foreach ( $student_uids as $uid ) {
+                    $st = null;
+                    foreach ( $family_students as $family_student ) {
+                        if ( (string) $family_student->student_uid === (string) $uid ) {
+                            $st = $family_student;
+                            break;
+                        }
                     }
-                }
-                if ( ! $student ) {
-                    $student = Olama_Reg_Core_Gateway::student( $student_uids[0] );
+                    if ( ! $st ) {
+                        $st = Olama_Reg_Core_Gateway::student( (string) $uid );
+                    }
+                    if ( $st ) {
+                        $students[] = $st;
+                    }
                 }
             }
 
             // A newly created family agreement may not have its fee rows assigned
             // yet. When Core has exactly one student for the family, that student
             // is unambiguous and can safely populate the draft contract.
-            if ( ! $student && count( $family_students ) === 1 ) {
-                $student = $family_students[0];
+            if ( empty( $students ) && count( $family_students ) === 1 ) {
+                $students = [ $family_students[0] ];
             }
+            $student = $students[0] ?? null;
         } else {
             $customer = Olama_Reg_Customer::get( (int) ( $agreement->customer_id ?? $agreement->payer_id ) );
             if ( $customer ) {
@@ -271,10 +279,19 @@ HTML;
                 $guardian_address = (string) ( $customer->address ?? '' );
                 $guardian_national_id = (string) ( $customer->national_id ?? '' );
             }
-            if ( ! empty( $agreement->participant_id ) ) {
-                $child = Olama_Reg_Child::get( (int) $agreement->participant_id );
+            $participant_ids = array_values( array_filter( array_map(
+                'intval',
+                (array) ( $agreement->participant_ids_array ?? [] )
+            ) ) );
+            if ( empty( $participant_ids ) && ! empty( $agreement->participant_id ) ) {
+                $participant_ids = [ (int) $agreement->participant_id ];
+            }
+
+            $students = [];
+            foreach ( $participant_ids as $pid ) {
+                $child = Olama_Reg_Child::get( $pid );
                 if ( $child ) {
-                    $student = (object) [
+                    $students[] = (object) [
                         'student_name'       => $child->child_name ?? '',
                         'student_national_no'=> $child->national_id ?? '',
                         'birth_date'         => $child->birth_date ?? '',
@@ -284,6 +301,7 @@ HTML;
                     ];
                 }
             }
+            $student = $students[0] ?? null;
         }
 
         $transportation = [];
@@ -319,12 +337,12 @@ HTML;
                 'address'      => $guardian_address,
             ],
             'student' => [
-                'full_name'   => self::value( $student, [ 'student_name', 'display_name', 'child_name' ] ),
-                'national_id' => self::value( $student, [ 'student_national_no', 'national_id' ] ),
-                'birth_date'  => self::value( $student, [ 'student_birth_date', 'birth_date', 'date_of_birth' ] ),
-                'gender'      => self::value( $student, [ 'student_gender_name', 'gender', 'student_gender' ] ),
-                'grade'       => self::value( $student, [ 'class_name', 'grade_name', 'grade' ] ),
-                'section'     => self::value( $student, [ 'section_name' ] ),
+                'full_name'   => self::values_joined( $students, [ 'student_name', 'display_name', 'child_name' ] ),
+                'national_id' => self::values_joined( $students, [ 'student_national_no', 'national_id' ] ),
+                'birth_date'  => self::values_joined( $students, [ 'student_birth_date', 'birth_date', 'date_of_birth' ] ),
+                'gender'      => self::values_joined( $students, [ 'student_gender_name', 'gender', 'student_gender' ] ),
+                'grade'       => self::values_joined( $students, [ 'class_name', 'grade_name', 'grade' ] ),
+                'section'     => self::values_joined( $students, [ 'section_name' ] ),
             ],
             'policy' => [
                 'payment_grace_days' => (int) get_option( 'olama_reg_payment_grace_days', 7 ),
@@ -421,6 +439,17 @@ HTML;
             }
         }
         return '';
+    }
+
+    private static function values_joined( array $rows, array $keys ): string {
+        $values = [];
+        foreach ( $rows as $row ) {
+            $val = self::value( is_object( $row ) ? $row : null, $keys );
+            if ( $val !== '' ) {
+                $values[] = $val;
+            }
+        }
+        return implode( ' ، ', array_unique( $values ) );
     }
 
     private static function flatten( array $value, string $prefix = '' ): array {

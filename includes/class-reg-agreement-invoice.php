@@ -512,14 +512,6 @@ class Olama_Reg_Agreement_Invoice {
             : null;
         if ( ! $template || ! (int) $template->is_active || trim( (string) $template->contract_content ) === '' ) {
             $errors[] = __( 'يجب اختيار نموذج عقد مفعل يحتوي على نص العقد.', 'olama-registration' );
-        } elseif ( $template->template_key === 'kindergarten-registration' ) {
-            $participant_ids = array_values( array_filter( array_map(
-                'strval',
-                (array) ( $agreement->participant_ids_array ?? [] )
-            ) ) );
-            if ( count( array_unique( $participant_ids ) ) !== 1 ) {
-                $errors[] = __( 'نموذج تسجيل الروضة يتطلب طالباً واحداً فقط في كل عقد.', 'olama-registration' );
-            }
         }
         if ( empty( $agreement->start_date ) ) {
             $errors[] = __( 'تاريخ بداية العقد مطلوب.', 'olama-registration' );
