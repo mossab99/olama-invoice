@@ -769,7 +769,21 @@ class Olama_Reg_Agreement_Invoice {
 
     private static function begin_atomic( string $savepoint ): bool {
         global $wpdb;
-        if ( (int) $wpdb->get_var( 'SELECT @@in_transaction' ) ) {
+
+        // @@in_transaction is unavailable before MariaDB 10.3.3 and on older
+        // MySQL releases. Probe with a savepoint instead: outside a transaction
+        // RELEASE fails (or SAVEPOINT is ignored), while an active transaction
+        // accepts both statements. Suppress and clear the expected probe error
+        // so AJAX responses remain valid JSON.
+        $probe                  = $savepoint . '_probe';
+        $previous_last_error    = $wpdb->last_error;
+        $previous_suppress      = $wpdb->suppress_errors( true );
+        $wpdb->query( 'SAVEPOINT ' . $probe );
+        $has_active_transaction = false !== $wpdb->query( 'RELEASE SAVEPOINT ' . $probe );
+        $wpdb->last_error       = $previous_last_error;
+        $wpdb->suppress_errors( $previous_suppress );
+
+        if ( $has_active_transaction ) {
             $wpdb->query( 'SAVEPOINT ' . $savepoint );
             return false;
         }
